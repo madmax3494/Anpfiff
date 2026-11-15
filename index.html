@@ -687,10 +687,10 @@ function spielAbschliessen(M) {
   });
   // Zuschauer
   const h = team(sp0.h); sp0.e.z = sp0.euro ? euroZuschauer(h, sp0) : sp0.pokal ? pokalZuschauer(h, team(sp0.g), sp0) : zuschauer(h, team(sp0.g));
-  if (sp0.euro && sp0.h === S.mein && !sp0.neutral) buchen('euro', Math.round(sp0.e.z * h.ticket * 1.8), `${EURO[sp0.euro].name}: Heimspiel vor ${sp0.e.z.toLocaleString('de-DE')} Zuschauern`);
+  if (sp0.euro && sp0.h === S.mein && !sp0.neutral) { const ein = Math.round(sp0.e.z * h.ticket * 1.8); buchen('euro', ein, `${EURO[sp0.euro].name}: Heimspiel vor ${sp0.e.z.toLocaleString('de-DE')} Zuschauern`); buchen('stadion', -ein * KOSTEN.spieltag, null); }
   if (sp0.h === S.mein && liga) heimEinnahme(sp0.e.z, h);
   if (sp0.pokal && !sp0.neutral && (sp0.h === S.mein || sp0.g === S.mein)) buchen('pokal', Math.round(sp0.e.z * h.ticket * 0.45), `DFB-Pokal: Anteil an ${sp0.e.z.toLocaleString('de-DE')} Zuschauern`);
-  if (sp0.h === S.mein || sp0.g === S.mein) erfolgSpiel(sp0, M);
+  if (sp0.h === S.mein || sp0.g === S.mein) { erfolgSpiel(sp0, M); if (liga) { const ich = sp0.h === S.mein ? 0 : 1; if (M.tore[ich] >= M.tore[1 - ich]) siegPraemie(M.tore[ich] > M.tore[1 - ich]); } }
   if (sp0.h === S.mein || sp0.g === S.mein) { const spn = sponsorAktiv(); const ich = sp0.h === S.mein ? 0 : 1; if (spn && spn.sieg && M.tore[ich] > M.tore[1 - ich]) buchen('sponsor', spn.sieg, 'Siegprämie ' + spn.name); }
   return sp0.e;
 }
@@ -710,16 +710,24 @@ function zuschauer(h, g) {
 // ---------- Finanzen ----------
 function bj() { return S.buch[S.saison] || (S.buch[S.saison] = { e: {}, a: {}, liga: meinTeam() ? meinTeam().liga : 0 }); }
 const ERTRAG = { tickets: 'Spielbetrieb (Tickets)', vip: 'Logen & VIP', tv: 'TV-Gelder', sponsor: 'Sponsoring', merch: 'Fanartikel', pokal: 'DFB-Pokal', euro: 'Europapokal', transfer: 'Transfererlöse', praemie: 'Prämien', investor: 'Investor', sonst: 'Sonstiges' };
-const AUFWAND = { gehalt: 'Gehälter', handgeld: 'Handgelder', abschrSp: 'Abschreibung Spieler', abschrSt: 'Abschreibung Stadion', stadion: 'Stadion & Spielbetrieb', verw: 'Verwaltung', stab: 'Trainerstab (über/unter Standard)', nlz: 'Nachwuchs (NLZ)', zinsen: 'Zinsen', abfindung: 'Abfindungen', transferverlust: 'Transferverluste', sonst: 'Sonstiges' };
+const AUFWAND = { gehalt: 'Gehälter', handgeld: 'Handgelder', abschrSp: 'Abschreibung Spieler', abschrSt: 'Abschreibung Stadion', stadion: 'Stadion & Spielbetrieb', verw: 'Verwaltung', stab: 'Trainerstab (über/unter Standard)', nlz: 'Nachwuchs (NLZ)', zinsen: 'Zinsen', abfindung: 'Abfindungen', transferverlust: 'Transferverluste', praemienSp: 'Prämien an Spieler', vermarktung: 'Vermarktung & Sponsorenservice', waren: 'Wareneinsatz Fanartikel', berater: 'Beraterhonorare', sonst: 'Sonstiges' };
+// Betriebskosten, die mit dem Umsatz wachsen (in tieferen Ligen schwächer: kleinerer Apparat, viel Ehrenamt)
+const KOSTEN = { spieltag: 0.15, waren: 0.55, vermarktung: 0.12, verwAnteil: 0.05, praemieTitel: 0.3, siegPraemie: [0.008, 0.005, 0.002, 0.0015], berater: 0.1 };
+function kostenFaktor(t) { // Liga-Stufe × Vereinsgröße (Umsatz im Vergleich zum Liga-Schnitt)
+  t = t || meinTeam(); const l = S.ligen[t.liga] || []; const mittel = l.length ? l.reduce((s, id) => s + summe(erloesSchaetzung(team(id))), 0) / l.length : 1;
+  return [1, 0.5, 0.15, 0.1][tst(t)] * clamp(summe(erloesSchaetzung(t)) / Math.max(1, mittel), 0.3, 1.6); }
+function siegPraemie(sieg) { const t = meinTeam(); const geh = kader(t).reduce((s, p) => s + p.gehalt, 0); const b = geh * KOSTEN.siegPraemie[tst(t)] * (sieg ? 1 : 0.3); if (b > 0) buchen('praemienSp', -b, null); }
 // betrag > 0 Ertrag, < 0 Aufwand. kasse=false: nur Buchhaltung (z. B. Abschreibung)
 function buchen(kat, betrag, text, kasse) {
+  if ((kat === 'euro' || kat === 'pokal') && betrag > 0 && kasse !== false && !/Zuschauer/.test(text || '')) buchen('praemienSp', -betrag * KOSTEN.praemieTitel, null);
   const b = bj(); if (betrag >= 0 && ERTRAG[kat]) b.e[kat] = (b.e[kat] || 0) + betrag; else b.a[kat] = (b.a[kat] || 0) + Math.abs(betrag);
   if (kasse !== false) { S.kasse += betrag; if (text) { S.konto = S.konto || []; S.konto.unshift({ s: S.saison, w: S.woche, t: text, b: betrag }); if (S.konto.length > 120) S.konto.length = 120; } }
 }
 function kassenbewegung(betrag, text) { S.kasse += betrag; S.konto = S.konto || []; S.konto.unshift({ s: S.saison, w: S.woche, t: text, b: betrag }); if (S.konto.length > 120) S.konto.length = 120; }
 function heimEinnahme(z, h) {
   buchen('tickets', z * h.ticket, `Heimspiel: ${z.toLocaleString('de-DE')} Zuschauer`);
-  if (h.vip) buchen('vip', Math.round(z * LIGEN[h.liga].ticket * 0.25 * h.vip), null);
+  const vip = h.vip ? Math.round(z * LIGEN[h.liga].ticket * 0.25 * h.vip) : 0; if (vip) buchen('vip', vip, null);
+  buchen('stadion', -(z * h.ticket + vip) * KOSTEN.spieltag * kostenFaktor(h), null);
   if (h.kap < LIGEN[h.liga].minKap && !h.ausbau) buchen('stadion', -[60e3, 40e3, 15e3, 0][tst(h)], 'Miete Ausweichstadion');
 }
 // Schwierigkeitsgrad: Startkapital, Geduld des Vorstands, Sponsoren, kleiner Stärke-Vorteil
@@ -763,11 +771,11 @@ function wochenFinanzen() {
   const geh = kader(t).reduce((s, p) => s + p.gehalt, 0);
   buchen('gehalt', -geh / WOCHEN, null);
   buchen('tv', e.tv / WOCHEN, null);
-  const spn = sponsorAktiv(); if (spn) buchen('sponsor', spn.betrag / WOCHEN, null);
+  const spn = sponsorAktiv(); if (spn) { buchen('sponsor', spn.betrag / WOCHEN, null); buchen('vermarktung', -spn.betrag * KOSTEN.vermarktung * kostenFaktor(t) / WOCHEN, null); }
   const pl = S.woche > 3 ? platz(t.id) : 9; const erfolg = 1 + clamp((S.ligen[t.liga].length / 2 - pl) * 0.02, -0.15, 0.2);
-  buchen('merch', e.merch * erfolg / WOCHEN, null);
+  buchen('merch', e.merch * erfolg / WOCHEN, null); buchen('waren', -e.merch * erfolg * KOSTEN.waren / WOCHEN, null);
   buchen('stadion', -(t.kap * [22, 16, 10, 6][tst(t)] + (t.vip || 0) * [400e3, 150e3, 50e3, 15e3][tst(t)]) / WOCHEN, null);
-  buchen('verw', -L.verw * (0.6 + 0.4 * Math.min(2, t.fans / 20000)) / WOCHEN, null);
+  buchen('verw', -(L.verw * (0.6 + 0.4 * Math.min(2, t.fans / 20000)) + summe(e) * KOSTEN.verwAnteil * kostenFaktor(t)) / WOCHEN, null);
   buchen('nlz', -[0.1e6, 0.4e6, 1e6, 2.5e6, 5e6][t.nlz] / WOCHEN, null);
   { const d = stabMehrkosten() / WOCHEN; if (d) { const b = bj(); b.a.stab = (b.a.stab || 0) + d; S.kasse -= d; } }
   // Abschreibungen
@@ -1185,6 +1193,7 @@ function transferAbschliessen(pid, betrag, raten, gehalt, jahre, handgeld, klaus
     S.raten = S.raten || []; for (let k = 1; k < raten; k++) S.raten.push({ s: S.saison + k, w: 1, betrag: Math.round(betrag / raten), text: `${p.nn} (${k + 1}. Rate)` });
   }
   if (handgeld) buchen('handgeld', -handgeld, `Handgeld ${p.nn}`);
+  if (betrag > 0) buchen('berater', -Math.round(betrag * KOSTEN.berater), `Beraterhonorar ${p.nn}`);
   p.karriere.push([S.saison, von ? von.name : 'vereinslos', betrag]); erfolgTransfer('kauf', p, betrag, von ? von.name : 'vereinslos');
   p.team = t.id; p.gehalt = gehalt; p.vEnde = S.saison + jahre - 1; p.klausel = klausel || 0; p.buch = betrag; p.abschr = betrag / Math.max(1, jahre); p.liste = false; p.nr = 0;
   t.kader.push(pid);
@@ -2234,7 +2243,7 @@ function hilfeSeite() {
   <p><b>Vorbereitung:</b> Sponsor wählen, Kader verstärken (Transferfenster offen), Ticketpreis und Aufstellung festlegen, dann „Saison starten“.</p>
   <p><b>Aufstellung:</b> Stärke, Fitness und Form zählen. Spieler auf fremden Positionen sind schwächer. Verletzte und gesperrte Spieler werden automatisch ersetzt.</p>
   <p><b>Transfers:</b> Erst mit dem Verein über die Ablöse einigen (auch in Raten), dann mit dem Spieler über Gehalt, Laufzeit und Handgeld. Spieler aus höheren Ligen wollen mehr Geld oder gar nicht wechseln.</p>
-  <p><b>Finanzen:</b> Gehälter, Stadion, Verwaltung, Nachwuchs und Zinsen laufen jede Woche. Einnahmen: Tickets, TV-Geld (nach Liga und Vorjahresplatz), Sponsor, Fanartikel, Transfers. Die Gewinn- und Verlustrechnung und die Bilanz zeigen, wie es dem Verein wirklich geht.</p>
+  <p><b>Finanzen:</b> Gehälter, Stadion, Verwaltung, Nachwuchs und Zinsen laufen jede Woche. Einnahmen: Tickets, TV-Geld (nach Liga und Vorjahresplatz), Sponsor, Fanartikel, Transfers. Mit dem Umsatz wachsen auch die Kosten: Spieltagsbetrieb, Wareneinsatz der Fanartikel, Vermarktung, Verwaltung, Sieg- und Titelprämien für die Spieler (30 % der Pokal- und Europapokal-Prämien) und Beraterhonorare (10 % der Ablöse) – bei großen Vereinen stärker als bei kleinen. Die Gewinn- und Verlustrechnung und die Bilanz zeigen, wie es dem Verein wirklich geht.</p>
   <p><b>Lizenz:</b> In Woche 28 prüft die Liga die Prognose zum Saisonende. Ist sie negativ, gibt es eine Auflage. Ist die Kasse am Saisonende trotzdem im Minus: Zwangsabstieg. Fällt die Kasse unter den Dispo-Rahmen: Insolvenz mit 9 Punkten Abzug.</p>
   <p><b>Vorstand:</b> Er misst dich am Saisonziel und an den Ergebnissen. Sinkt das Vertrauen auf 0, wirst du entlassen und kannst woanders anfangen.</p>
   <p><b>Training & Trainerstab (Kader):</b> Schwerpunkt und Intensität steuern Entwicklung, Frische und Verletzungen. Ein besserer Stab als in der Liga üblich kostet mehr, wirkt aber: Co-Trainer (Entwicklung), Torwarttrainer, Athletiktrainer (Erholung, weniger Verletzungen), Arzt (schnellere Heilung), Scout (genauere Talenteinschätzung, Talentberichte).</p>
