@@ -204,7 +204,7 @@ const DATEN = {"stand":"2026-11-15","saison":"2026/27","quelle":"Vereine und Kad
 'use strict';
 /* Anpfiff & Bilanz – Spielkern (ohne Oberfläche, auch in Node testbar) */
 const FM = (function () {
-const VERSION = '1.8';
+const VERSION = '1.9';
 let S = null; // Spielstand
 
 // ---------- Zufall (mit Startwert, damit Tests wiederholbar sind) ----------
@@ -928,10 +928,63 @@ function trainingsFaktor(p) {
   return Math.max(0.4, f);
 }
 // geschätztes Talent: eigene Spieler genau, fremde je nach Scout
-function potSchaetzung(p) { if (p.team === S.mein) return p.pot; const sc = S.stab ? S.stab.scout : 1; const a = [7, 4.5, 2.5, 1][sc];
+function scoutUnsicherheit(p) { const sc = S.stab ? S.stab.scout : 1; const n = S.scout && S.scout.beob ? Math.min(3, S.scout.beob[p.id] || 0) : 0; return [7, 4.5, 2.5, 1][sc] * Math.pow(0.6, n); }
+function potSchaetzung(p) { if (p.team === S.mein) return p.pot; const a = scoutUnsicherheit(p);
   return clamp(p.pot + (hr(p.id + 's' + S.saison) * 2 - 1) * a, p.st, 99); }
+// Spanne, in der das Talent sicher liegt (eigene Spieler genau)
+function potSpanne(p) { if (p.team === S.mein) return [Math.round(p.pot), Math.round(p.pot)]; const a = scoutUnsicherheit(p), c = potSchaetzung(p); return [Math.round(Math.max(p.st, c - a)), Math.round(Math.min(99, c + a))]; }
+
+// ---------- Scouting (v1.9) ----------
+// Auftrag: Liga, Position, Höchstalter. Alle zwei Wochen meldet der Scout neue Spieler; Spieler auf der Beobachtungsliste werden genauer eingeschätzt.
+function scoutInit() { S.scout = S.scout || { auftrag: null, liste: [], beob: {} }; return S.scout; }
+const SCOUT_KOSTEN = [12e3, 7e3, 4e3, 2.5e3]; // je Woche nach Liga-Stufe
+function scoutAuftrag(a) { const sc = scoutInit(); if (!a) { sc.auftrag = null; return null; } if (!S.stab || !S.stab.scout) return 'Ohne Scout geht das nicht. Erst im Trainerstab einen Scout einstellen.'; sc.auftrag = { liga: a.liga === '' || a.liga == null ? '' : +a.liga, pos: a.pos || '', maxAlter: +a.maxAlter || 23, seit: S.saison * 100 + S.woche }; return null; }
+function beobachten(pid, an) { const sc = scoutInit(); sc.liste = sc.liste.filter(x => x !== pid); if (an) sc.liste.unshift(pid); if (sc.liste.length > 30) sc.liste.length = 30; }
+function scoutWoche() {
+  const sc = scoutInit(); const lvl = S.stab ? S.stab.scout : 0; const ich = meinTeam(); if (!ich) return;
+  sc.liste = sc.liste.filter(id => S.spieler[id] && S.spieler[id].team !== S.mein);
+  if (!lvl || S.woche % 2) return;
+  sc.liste.forEach(id => { sc.beob[id] = Math.min(4, (sc.beob[id] || 0) + (rnd() < 0.4 + 0.2 * lvl ? 1 : 0)); });
+  const a = sc.auftrag; if (!a) return;
+  buchen('sonst', -SCOUT_KOSTEN[tst(ich)] * 2, null);
+  let l = Object.values(S.spieler).filter(p => p.team != null && p.team !== S.mein && !istLeihe(p) && !team(p.team).pool && !team(p.team).ausland && alter(p) <= a.maxAlter && (!a.pos || p.pos === a.pos) && (a.liga === '' || team(p.team).liga === a.liga) && !(sc.beob[p.id] > 0));
+  l = l.sort((x, y) => (potSchaetzung(y) - potSchaetzung(x)) + gauss() * 4).slice(0, lvl);
+  if (!l.length) { post('Scout: nichts Neues', 'Für deinen Auftrag hat der Scout keine weiteren passenden Spieler gefunden. Ändere Liga, Position oder Alter.'); return; }
+  l.forEach(p => { sc.beob[p.id] = 1; beobachten(p.id, true); });
+  post('Scoutbericht', l.map(p => { const s = potSpanne(p); return `${vname(p)} (${POSNAME[p.pos]}, ${alter(p)} J., ${team(p.team).name}): Stärke ${Math.round(p.st)}, Talent ${s[0]}–${s[1]}, Forderung ca. ${geld(abloeseForderung(p))}`; }).join('; ') + '. Alle stehen jetzt auf deiner Beobachtungsliste (Transfers → Scouting). Je öfter beobachtet, desto genauer.');
+}
+
+// ---------- Jugend (U19, v1.9) ----------
+// Eigene Jugendspieler leben außerhalb des Profikaders in S.jugend, entwickeln sich je nach NLZ und werden hochgezogen oder gehen mit 19.
+function jugendNeu(n, alterVon, alterBis) {
+  const ich = meinTeam(); const nlz = ich.nlz || 0; const L = LIGEN[ich.liga]; const neu = [];
+  for (let k = 0; k < n; k++) {
+    const pos = pick(['TW', 'AB', 'AB', 'MF', 'MF', 'MF', 'ST', 'ST']); const p = erfinde(null, pos, L.basis - 22 + nlz * 1.5, alterVon, alterBis); p.st = clamp(p.st + (alter(p) - 15) * 3, 25, 90); // Ältere sind schon weiter
+    p.pot = clamp(p.st + 14 + rnd() * 14 + nlz * 2.5 + (rnd() < 0.04 + 0.03 * nlz ? 8 : 0), p.st, 96); p.juwel = p.pot >= L.basis + 22;
+    delete S.spieler[p.id]; p.team = null; S.jugend.push(p); neu.push(p);
+  }
+  return neu;
+}
+function jugendInit() { if (S.jugend || S.mein == null) return; S.jugend = []; jugendNeu(3, 15, 16); jugendNeu(4, 17, 18); }
+function jugendSpanne(p) { const a = [8, 6, 4, 3, 2][meinTeam().nlz || 0]; const c = clamp(p.pot + (hr(p.id + 'j' + S.saison) * 2 - 1) * a, p.st, 99); return [Math.round(Math.max(p.st, c - a)), Math.round(Math.min(99, c + a))]; }
+function jugendWoche() { if (!S.jugend) return; const nlz = meinTeam().nlz || 0; S.jugend.forEach(p => { if (p.pot > p.st) p.st += (p.pot - p.st) * (0.004 + 0.0016 * nlz) * (0.6 + rnd() * 0.8); }); }
+function hochziehen(pid) {
+  const i = (S.jugend || []).findIndex(p => p.id === pid); if (i < 0) return 'Nicht gefunden.'; const ich = meinTeam();
+  if (ich.kader.length >= 30) return 'Der Profikader ist voll (30 Spieler).';
+  const p = S.jugend.splice(i, 1)[0]; S.spieler[p.id] = p; p.team = ich.id; p.gehalt = Math.round(LIGEN[ich.liga].minGehalt * 0.3 / 1e3) * 1e3; p.vEnde = S.saison + 2; p.stS = p.st; p.potS = p.pot; p.verlauf = [];
+  p.karriere.push([S.saison, ich.name + ' (aus der eigenen Jugend)', 0]); ich.kader.push(p.id);
+  post('Aus der Jugend hochgezogen', `${vname(p)} (${POSNAME[p.pos]}, ${alter(p)} J., Stärke ${Math.round(p.st)}) bekommt einen Profivertrag bis ${p.vEnde + 1}, Gehalt ${geld(p.gehalt)} pro Jahr.`);
+  return null;
+}
+function jugendEntlassen(pid) { S.jugend = (S.jugend || []).filter(p => p.id !== pid); }
+function jugendSaison() { // zum Saisonstart: Älteste gehen, neue kommen
+  if (!S.jugend) return; const weg = S.jugend.filter(p => alter(p) >= 19); S.jugend = S.jugend.filter(p => alter(p) < 19);
+  const nlz = meinTeam().nlz || 0; const neu = jugendNeu(2 + nlz, 15, 16);
+  post('Neuer Jahrgang in der Jugend', `${neu.length} Talente sind neu in deiner U19: ${neu.map(p => `${p.vn} ${p.nn} (${POSNAME[p.pos]}${p.juwel ? ', großes Talent!' : ''})`).join(', ')}.${weg.length ? ' Zu alt für die Jugend und ohne Profivertrag gegangen: ' + weg.map(p => p.vn + ' ' + p.nn).join(', ') + '.' : ''} Kader → Jugend.`);
+  if (S.jugend.length > 20) S.jugend.length = 20;
+}
 function talentBericht() {
-  if (!S.stab || !S.stab.scout || S.woche % 4) return;
+  if (!S.stab || !S.stab.scout || S.woche % 4 || (S.scout && S.scout.auftrag)) return;
   const ich = meinTeam(); const n = 1 + S.stab.scout;
   const l = Object.values(S.spieler).filter(p => p.team != null && p.team !== S.mein && alter(p) <= 21 && !team(p.team).pool && Math.abs(tst(team(p.team)) - tst(ich)) <= 1 && potSchaetzung(p) > ich.staerke + 4)
     .sort((a, b) => potSchaetzung(b) - potSchaetzung(a) + gauss() * 3).slice(0, n);
@@ -1617,7 +1670,8 @@ function wocheAbschliessen() {
     p.form *= 0.97;
   });
   trainingWoche();
-  talentBericht();
+  talentBericht(); scoutWoche(); jugendWoche();
+  if (S.woche === WOCHEN - 6 && S.jugend) { const alt = S.jugend.filter(p => alter(p) >= 18); if (alt.length) post('Jugend: Entscheidung steht an', `Zum Saisonende werden ${alt.map(p => p.vn + ' ' + p.nn).join(', ')} zu alt für die U19. Ohne Profivertrag (Kader → Jugend → Hochziehen) verlassen sie den Verein.`); }
   // Sperren nach dem Spiel abbauen (nur Teams, die gespielt haben)
   spieleDerWoche(S.woche).forEach(s => [s.h, s.g].forEach(id => kader(team(id)).forEach(p => { if (p.sperre > 0 && !p.sperreNeu) p.sperre--; p.sperreNeu = false; })));
   vertrauenAnpassen();
@@ -1641,7 +1695,7 @@ function vertrauenAnpassen() {
   if (S.vertrauen <= 0 && S.woche > 8) entlassen('Nach der Niederlagenserie hat der Vorstand die Reißleine gezogen.');
 }
 function entlassen(grund) { S.gefeuert = true; post('Entlassen', grund + ' Du kannst bei einem anderen Verein neu anfangen.', 'warn'); }
-function neuerVerein(id) { erfolgeInit(); S.fanSt = 60; S.moral = 60; const v = S.manager.vereine; if (v.length) v[v.length - 1].bis = S.saison; v.push({ id, von: S.saison }); S.manager.serie = 0; S.manager.siegserie = 0; S.mein = id; S.gefeuert = false; const t = meinTeam(); startFinanzen(); autoAufstellung(t); S.vertrauen = 55; post('Neuer Job', `Willkommen bei ${t.name}! Ziel des Vorstands: ${S.ziel.text}.`); }
+function neuerVerein(id) { erfolgeInit(); S.fanSt = 60; S.moral = 60; const v = S.manager.vereine; if (v.length) v[v.length - 1].bis = S.saison; v.push({ id, von: S.saison }); S.manager.serie = 0; S.manager.siegserie = 0; S.mein = id; S.gefeuert = false; S.jugend = null; const t = meinTeam(); startFinanzen(); jugendInit(); autoAufstellung(t); S.vertrauen = 55; post('Neuer Job', `Willkommen bei ${t.name}! Ziel des Vorstands: ${S.ziel.text}.`); }
 function prognoseSaisonende() {
   const t = meinTeam(); const rest = WOCHEN - S.woche; const e = erloesSchaetzung(t);
   const heimRest = S.plan.filter(s => !s.e && s.h === t.id).length;
@@ -1832,6 +1886,7 @@ function neueSaisonVorbereiten(bericht) {
   // Jugend
   Object.values(S.teams).forEach(t => {
     if (t.pool) return;
+    if (t.id === S.mein && S.jugend) return; // eigener Nachwuchs kommt über die U19 (jugendSaison)
     const nlz = t.id === S.mein ? t.nlz : 1;
     const n = t.id === S.mein ? 2 + (nlz >= 3 ? 1 : 0) : 2;
     const neu = [];
@@ -1839,6 +1894,7 @@ function neueSaisonVorbereiten(bericht) {
     if (t.id === S.mein) post('Neue Talente aus dem Nachwuchs', neu.map(p => `${p.vn} ${p.nn} (${POSNAME[p.pos]}, Stärke ${Math.round(p.st)}, Talent bis ca. ${Math.round(p.pot)})`).join(', ') + '.');
   });
   // Computer-Transfers: gute Spieler kleiner Vereine wechseln nach oben
+  if (S.jugend) jugendSaison(); else jugendInit();
   const kiKauf = kiTransfers(); const kiLeih = kiLeihen(); transferTicker(kiKauf, kiLeih, S.leihKaeufe || []); S.leihKaeufe = [];
   Object.values(S.teams).forEach(t => { if (t.pool) return; if (t.id !== S.mein) { kaderTrimmen(t); kiErsatz(t); t.form = bestFormation(t); } t.abzug = 0; const st = teamStaerke(t); t.staerke = t.staerke * 0.5 + st * 0.5; });
   if (talentBericht.length) post('Entwicklungsbericht', 'Diese jungen Spieler haben ihr Talent durch die Saison deutlich verändert: ' + talentBericht.join('; ') + '. Spielpraxis und gute Noten lassen Talente wachsen, Tribüne lässt sie verkümmern.');
@@ -2123,7 +2179,7 @@ function migrieren() {
   if (S.mein != null && !S.stab) { S.stab = stabStandard(); S.training = { schwerpunkt: 'ausgewogen', intensitaet: 0 }; }
   if (!S.pokal) S.pokal = { saison: S.saison, runden: [], sieger: null }; // DFB-Pokal startet mit der nächsten Saison
   if (!S.verlaufFix) { Object.values(S.spieler).forEach(p => (p.verlauf || []).forEach(v => v[0]--)); S.verlaufFix = true; } // bis v1.5 stand der Verlauf eine Saison zu spät
-  ligaRekordeInit(); erfolgeInit(); if (S.mein != null && !S.manager.vereine.length) S.manager.vereine.push({ id: S.mein, von: S.saison });
+  jugendInit(); scoutInit(); ligaRekordeInit(); erfolgeInit(); if (S.mein != null && !S.manager.vereine.length) S.manager.vereine.push({ id: S.mein, von: S.saison });
   bewertungNachziehen();
   S.v = VERSION;
 }
@@ -2138,7 +2194,7 @@ function bewertungNachziehen() {
   S.bewertet = true; return n;
 }
 function zustand() { return S; }
-function vereinWaehlen(id, schwierigkeit) { S.schwierigkeit = schwierigkeit || S.schwierigkeit || 'normal'; S.fanSt = 60; S.moral = 60; erfolgeInit(); S.manager.vereine.push({ id, von: S.saison }); S.mein = id; startFinanzen(); const t = meinTeam(); autoAufstellung(t); pokalNeu(); euroNeu(); post('Willkommen!', `Du bist neuer Manager von ${t.name}. Der Vorstand erwartet: ${S.ziel.text}. Kasse: ${geld(S.kasse)}. Wähle zuerst einen Hauptsponsor, dann kann die Saison beginnen.`); }
+function vereinWaehlen(id, schwierigkeit) { S.schwierigkeit = schwierigkeit || S.schwierigkeit || 'normal'; S.fanSt = 60; S.moral = 60; erfolgeInit(); S.manager.vereine.push({ id, von: S.saison }); S.mein = id; startFinanzen(); const t = meinTeam(); autoAufstellung(t); jugendInit(); scoutInit(); pokalNeu(); euroNeu(); post('Willkommen!', `Du bist neuer Manager von ${t.name}. Der Vorstand erwartet: ${S.ziel.text}. Kasse: ${geld(S.kasse)}. Wähle zuerst einen Hauptsponsor, dann kann die Saison beginnen.`); }
 
 return { editorSpeichern, editorLoeschen, importLaufend, alleTeams, leistungsFaktor, VERSION, LIGEN, WOCHEN, FENSTER_WINTER, FORMATIONEN, POS, POSNAME, AUSR, EINSATZ, ERTRAG, AUFWAND, CSV_KOPF,
   neueWelt, vereinWaehlen, neuerVerein, zustand, laden, exportieren, team, sp, meinTeam, kader, alter, marktwert, wunschGehalt, geld, tabelle, platz, zone, torjaeger,
@@ -2149,7 +2205,7 @@ return { editorSpeichern, editorLoeschen, importLaufend, alleTeams, leistungsFak
   leihPruefen, ausleihen, leihZiele, verleihen, verliehen, leihGebuehr, istLeihe, leihenBeenden, stimmungInit, stimmungAendern, presseAntwort, PRESSE, wirkungText, fanFaktor, moralBonus, ANSPRACHE, ansprache, formationLive,
   csvExport, csvParse, importAnwenden, kassenbewegung, buchen, bj, setS: o => { S = o; },
   setDaten, voll, stufe, tst, REGIONEN, direktRegion, abstiegsPlaetze, fortsetzen, offenesSpiel, pokalRunde, meinPokalSpiel, pokalSpiele, POKAL_RUNDEN, POKAL_WOCHEN, POKAL_PRAEMIE, POKAL_FINALE,
-  angebotBedingung, angeboteFuerMeineSpieler, wvbFuerMich, kiLeihen, kiTransfers, saisonLeistung, verh, tauschWert, wvbRabatt, erwartung, boniWert, boniText, leihOptionen, leihKaufen, ausgeliehen, SCHWIERIG, TITEL, titelText, bestenliste, ewigeTabelle, landName, ligaRekordListe, ligaRekordeInit, TORQ, gesamtRang, rueckblickBauen,
+  angebotBedingung, angeboteFuerMeineSpieler, wvbFuerMich, kiLeihen, kiTransfers, potSpanne, scoutInit, scoutAuftrag, beobachten, scoutWoche, SCOUT_KOSTEN, jugendInit, jugendSpanne, hochziehen, jugendEntlassen, jugendSaison, jugendWoche, saisonLeistung, verh, tauschWert, wvbRabatt, erwartung, boniWert, boniText, leihOptionen, leihKaufen, ausgeliehen, SCHWIERIG, TITEL, titelText, bestenliste, ewigeTabelle, landName, ligaRekordListe, ligaRekordeInit, TORQ, gesamtRang, rueckblickBauen,
   EURO, EURO_KO, EURO_LP_WOCHEN, LAND, euroSpiele, euroTabelle, euroMeinWett, wettText, ligaKurz, istAusland, koSpiel, aggregat,
   STAB, STAB_STUFEN, TRAINING, INTENSITAET, stabStandard, stabKosten, stabMehrkosten, stabSetzen, trainingSetzen, trainingsFaktor, potSchaetzung, ersteMannschaft, aufstiegsberechtigt };
 })();
@@ -2364,7 +2420,7 @@ function entwicklungHtml(p, mein) {
 }
 function kaderSeite() {
   const sub = A.sub || 'liste';
-  let h = `<h1>Kader</h1>` + reiter([['liste', 'Spieler'], ['aufstellung', 'Aufstellung & Taktik'], ['training', 'Training & Stab']], sub, 'kadersub');
+  let h = `<h1>Kader</h1>` + reiter([['liste', 'Spieler'], ['aufstellung', 'Aufstellung & Taktik'], ['training', 'Training & Stab'], ['jugend', 'Jugend (U19)']], sub, 'kadersub');
   const t = FM.meinTeam();
   if (sub === 'liste') {
     const k = FM.kader(t).sort((a, b) => FM.POS.indexOf(a.pos) - FM.POS.indexOf(b.pos) || b.st - a.st);
@@ -2374,6 +2430,7 @@ function kaderSeite() {
     ${k.map(p => `<tr class="klick" data-a="spieler" data-id="${p.id}"><td><span class="pos ${p.pos}">${p.pos}</span></td><td>${pn(p)}${status(p)}${t.elf.includes(p.id) ? ' <span class="leise klein" title="in der Startelf">●</span>' : ''}</td><td class="zahl">${FM.alter(p)}</td><td class="zahl"><span class="st">${Math.round(p.st)}</span>${trend(p)}</td><td class="zahl nur-gross">${Math.round(p.fit)}</td><td class="zahl nur-gross ${p.form > 0.5 ? 'plus' : p.form < -0.5 ? 'minus' : ''}">${p.form > 0 ? '+' : ''}${p.form.toFixed(1)}</td><td class="zahl">${g(FM.marktwert(p))}</td><td class="zahl nur-gross">${g(p.gehalt)}</td><td class="zahl nur-gross">${p.vEnde + 1}</td><td class="zahl nur-gross">${p.spiele}/${p.tore}</td></tr>`).join('')}</table></div>
     <p class="klein leise">🤕 verletzt · 🟥 gesperrt · 🏷️ Transferliste · 🔁 Leihspieler · ⏳ Vertrag endet zum Saisonende · ● Startelf. Stärke ist eine Schätzung des Spiels.</p>`;
   } else if (sub === 'training') h += trainingHtml(t);
+  else if (sub === 'jugend') h += jugendHtml(t);
   else h += aufstellungHtml(t);
   return h;
 }
@@ -2406,11 +2463,38 @@ function aufstellungHtml(t) {
     <h3>Bank</h3><div class="klein">${t.bank.map(id => { const p = FM.sp(id); return `<span class="pos ${p.pos}">${p.pos}</span> ${e(p.nn)} (${Math.round(p.st)})`; }).join(' · ') || '–'}</div></div></div>`;
 }
 
+// ---------- Jugend (U19) ----------
+function jugendHtml(t) {
+  const j = (S().jugend || []).slice().sort((a, b) => FM.alter(b) - FM.alter(a) || b.st - a.st);
+  const nlzN = ['minimal', 'Basis', 'gut', 'stark', 'Spitze'][t.nlz || 0];
+  return `<div class="karte"><h2>Deine U19</h2><p class="klein leise">Nachwuchsleistungszentrum: Stufe ${t.nlz || 0} (${nlzN}). Ein besseres NLZ bringt mehr und bessere Talente, schnellere Entwicklung und eine genauere Einschätzung. Jedes Jahr kommen ${2 + (t.nlz || 0)} neue Talente. Mit 19 müssen sie einen Profivertrag bekommen oder gehen. Ausbau unter Finanzen → Stadion.</p>
+  ${j.length ? `<div class="tabwrap"><table><tr><th>Pos</th><th>Name</th><th class="zahl">Alter</th><th class="zahl">Stärke</th><th class="zahl">Talent</th><th></th></tr>
+  ${j.map(p => { const s = FM.jugendSpanne(p); return `<tr><td><span class="pos ${p.pos}">${p.pos}</span></td><td>${pn(p)}${p.juwel ? ' <span title="großes Talent">💎</span>' : ''}${FM.alter(p) >= 18 ? ' <span title="letztes Jugendjahr">⏳</span>' : ''}</td><td class="zahl">${FM.alter(p)}</td><td class="zahl">${Math.round(p.st)}</td><td class="zahl">${s[0]}–${s[1]}</td><td class="zahl"><button class="knopf k" data-a="hochziehen" data-id="${p.id}">Hochziehen</button> <button class="knopf k r" data-a="jugend-weg" data-id="${p.id}">✕</button></td></tr>`; }).join('')}</table></div>` : '<p class="leise">Keine Jugendspieler. Der nächste Jahrgang kommt zum Saisonstart.</p>'}
+  <p class="klein leise">💎 großes Talent · ⏳ letztes Jugendjahr. Hochgezogene Spieler bekommen einen Profivertrag über drei Jahre zum Mindestlohn der Liga (30 %). Im Profikader entwickeln sie sich mit Spielpraxis schneller.</p></div>`;
+}
+function scoutHtml() {
+  const s = S(); const sc = s.scout || { liste: [], beob: {} }; const lvl = s.stab ? s.stab.scout : 0; const a = sc.auftrag; const t = FM.meinTeam();
+  const kosten = FM.SCOUT_KOSTEN[FM.tst(t)];
+  let h = `<div class="karte"><h2>Scout-Auftrag</h2>${lvl ? `<p class="klein leise">Dein Scout (${FM.STAB_STUFEN[lvl]}) sucht alle zwei Wochen ${lvl} ${lvl === 1 ? 'Spieler' : 'Spieler'} nach deinen Vorgaben. Reisekosten ${g(kosten)} pro Woche, solange ein Auftrag läuft.</p>
+  <div class="filter" style="grid-template-columns:2fr 1fr 1fr"><label class="feld">Liga<select id="sc-liga"><option value="">alle Ligen</option>${FM.LIGEN.map((L, i) => `<option value="${i}" ${a && a.liga === i ? 'selected' : ''}>${e(L.name)}</option>`).join('')}</select></label>
+  <label class="feld">Position<select id="sc-pos"><option value="">alle</option>${FM.POS.map(x => `<option value="${x}" ${a && a.pos === x ? 'selected' : ''}>${FM.POSNAME[x]}</option>`).join('')}</select></label>
+  <label class="feld">Höchstalter<select id="sc-alter">${[19, 21, 23, 25, 28, 32].map(x => `<option ${a && a.maxAlter === x || (!a && x === 23) ? 'selected' : ''}>${x}</option>`).join('')}</select></label></div>
+  <div class="zeile"><button class="knopf p" data-a="scout-start">${a ? 'Auftrag ändern' : 'Auftrag starten'}</button>${a ? '<button class="knopf" data-a="scout-stop">Auftrag beenden</button>' : ''}</div>
+  ${a ? `<p class="klein">Läuft: ${a.liga === '' ? 'alle Ligen' : e(FM.LIGEN[a.liga].name)}, ${a.pos ? FM.POSNAME[a.pos] : 'alle Positionen'}, bis ${a.maxAlter} Jahre.</p>` : ''}` : '<p>Du hast keinen Scout. Unter Kader → Training & Stab einen einstellen.</p>'}</div>`;
+  const l = (sc.liste || []).map(FM.sp).filter(p => p && p.team !== s.mein);
+  h += `<div class="karte"><h2>Beobachtungsliste</h2>${l.length ? `<div class="tabwrap"><table><tr><th>Pos</th><th>Name</th><th>Verein</th><th class="zahl">Alter</th><th class="zahl">Stärke</th><th class="zahl">Talent</th><th class="zahl nur-gross">Beob.</th><th class="zahl">Forderung</th></tr>
+  ${l.map(p => { const sp = FM.potSpanne(p); return `<tr class="klick" data-a="spieler" data-id="${p.id}"><td><span class="pos ${p.pos}">${p.pos}</span></td><td>${pn(p)}</td><td>${p.team != null ? e(FM.team(p.team).kurz) : 'vereinslos'}</td><td class="zahl">${FM.alter(p)}</td><td class="zahl">${Math.round(p.st)}</td><td class="zahl">${sp[0]}–${sp[1]}</td><td class="zahl nur-gross">${'●'.repeat(Math.min(4, sc.beob[p.id] || 0)) || '–'}</td><td class="zahl">${p.team != null ? g(FM.abloeseForderung(p)) : 'frei'}</td></tr>`; }).join('')}</table></div>` : '<p class="leise">Leer. Spieler antippen → „Beobachten“, oder einen Scout-Auftrag starten.</p>'}
+  <p class="klein leise">Talent als Spanne: Je öfter der Scout einen Spieler beobachtet (●) und je besser er ist, desto enger wird sie.</p></div>`;
+  return h;
+}
+
 // ---------- Spielerdialog ----------
 function spielerDialog(id) {
   const p = FM.sp(id); if (!p) return; const s = S(); const mein = p.team === s.mein; const t = p.team != null ? FM.team(p.team) : null;
   const ps = FM.potSchaetzung(p); const pot = ps - p.st; const scout = s.stab ? s.stab.scout : 1;
-  const talent = mein ? `ca. ${Math.round(p.pot)}` : (scout >= 2 ? `ca. ${Math.round(ps)} (Scout)` : pot > 12 ? 'sehr hoch' : pot > 6 ? 'hoch' : pot > 2 ? 'etwas' : 'ausgereizt');
+  const beob = s.scout && s.scout.beob ? s.scout.beob[p.id] || 0 : 0; const spn = FM.potSpanne(p);
+  const talent = mein ? `ca. ${Math.round(p.pot)}` : (scout >= 2 || beob ? `${spn[0]}–${spn[1]}${beob ? ' (' + beob + '× beobachtet)' : ' (Scout)'}` : pot > 12 ? 'sehr hoch' : pot > 6 ? 'hoch' : pot > 2 ? 'etwas' : 'ausgereizt');
+  const aufListe = s.scout && (s.scout.liste || []).includes(p.id);
   let h = `<div class="zwischen"><h2>${pn(p)}</h2><button class="knopf k" data-a="zu">✕</button></div>
   <div class="leise klein">${FM.POSNAME[p.pos]} · ${FM.alter(p)} Jahre · ${e(p.nat || '–')}${p.nr ? ' · Nr. ' + p.nr : ''} · ${t ? e(t.name) : 'vereinslos'} · ${p.echt ? 'echter Spieler (Kader laut Wikipedia)' : 'erfundener Spieler'}</div>
   <div class="raster" style="margin-top:10px;grid-template-columns:repeat(3,1fr)"><div><div class="leise klein">Stärke</div><div class="gross">${Math.round(p.st)}</div></div><div><div class="leise klein">Talent</div><b>${talent}</b></div><div><div class="leise klein">Marktwert</div><b>${g(FM.marktwert(p))}</b></div>
@@ -2421,7 +2505,7 @@ function spielerDialog(id) {
   ${mein && p.wvb ? `<div class="klein" style="margin-top:6px">Weiterverkaufsbeteiligung: ${p.wvb.pct} % vom Mehrerlös über ${g(p.wvb.basis)} gehen an ${e(FM.team(p.wvb.an).name)}.</div>` : ''}
   ${entwicklungHtml(p, mein)}
   ${p.karriere.length ? `<h3>Stationen im Spiel</h3><div class="klein">${p.karriere.map(k => `${saisonText(k[0])}: ${e(k[1])}${k[2] ? ' (' + g(k[2]) + ')' : ''}`).join('<br>')}</div>` : ''}`;
-  h += `<div class="zeile" style="margin-top:8px"><button class="knopf k" data-a="ed-oeffnen" data-id="${id}">🛠️ In der Datenbank bearbeiten</button></div>`;
+  h += `<div class="zeile" style="margin-top:8px">${!mein ? `<button class="knopf k" data-a="beobachten" data-id="${id}">${aufListe ? '👁️ Nicht mehr beobachten' : '👁️ Beobachten'}</button>` : ''}<button class="knopf k" data-a="ed-oeffnen" data-id="${id}">🛠️ In der Datenbank bearbeiten</button></div>`;
   if (mein && p.leihe) {
     const kf = p.leihe.kauf;
     h += `<h3>Leihe</h3><p class="klein">Ausgeliehen von <b>${e(FM.team(p.leihe.von).name)}</b> bis Saisonende (Leihgebühr ${g(p.leihe.gebuehr || 0)}). ${kf && kf.art === 'pflicht' ? `Mit Kaufpflicht: Zum Saisonende wechselt ${e(p.nn)} für ${g(kf.preis)} fest zu uns (Gehalt dann ${g(kf.gehalt)}).` : kf && kf.art === 'option' ? `Mit Kaufoption für ${g(kf.preis)}, gültig bis Saisonende. Sonst kehrt ${e(p.nn)} zurück.` : `Danach kehrt ${e(p.nn)} zurück.`} Verkaufen oder verlängern geht nicht.</p>
@@ -2815,7 +2899,8 @@ function platzDiagramm(p, n, li, alt) {
 // ---------- Transfers ----------
 function transferSeite() {
   const s = S(); const sub = A.sub || 'markt'; const f = A.filter;
-  let h = `<h1>Transfers</h1><div class="hinweis">${FM.fensterOffen() ? 'Transferfenster <b>offen</b>.' : 'Transferfenster <b>geschlossen</b> (offen in der Vorbereitung und in den Wochen 17–20). Vereinslose Spieler kannst du jederzeit holen.'} Kasse ${g(s.kasse)}.</div>` + reiter([['markt', 'Markt'], ['frei', 'Vereinslos'], ['meine', 'Meine Verkäufe']], sub, 'transsub');
+  let h = `<h1>Transfers</h1><div class="hinweis">${FM.fensterOffen() ? 'Transferfenster <b>offen</b>.' : 'Transferfenster <b>geschlossen</b> (offen in der Vorbereitung und in den Wochen 17–20). Vereinslose Spieler kannst du jederzeit holen.'} Kasse ${g(s.kasse)}.</div>` + reiter([['markt', 'Markt'], ['frei', 'Vereinslos'], ['scout', 'Scouting'], ['meine', 'Meine Verkäufe']], sub, 'transsub');
+  if (sub === 'scout') return h + scoutHtml();
   if (sub === 'meine') {
     const t = FM.meinTeam(); const l = FM.kader(t).filter(p => p.liste || FM.restJahre(p) === 0);
     const ang = s.post.filter(m => m.aktion && m.aktion.typ === 'angebot' && !m.erledigt);
@@ -2853,6 +2938,7 @@ function hilfeSeite() {
   <p><b>DFB-Pokal:</b> 64 Vereine, sechs Runden (Wochen ${FM.POKAL_WOCHEN.join(', ')}). Die tiefere Liga hat Heimrecht, Unentschieden gibt es nicht: Verlängerung und Elfmeterschießen. Jede Runde bringt Prämie und Zuschauereinnahmen. Pokalspiele zählen nicht für Liga-Statistik und Gelbsperren.</p>
   <p><b>Europapokal:</b> Champions League, Europa League und Conference League mit je 36 Vereinen, 2026/27 mit den echten Teilnehmern und der echten Auslosung. Ligaphase (8 bzw. 6 Spieltage), dann Playoffs, Achtelfinale, Viertelfinale, Halbfinale (Hin- und Rückspiel) und Finale an neutralem Ort. Deutsche Vereine qualifizieren sich über die Bundesliga (Platz 1–4 CL, 5 und Pokalsieger EL, 6 ECL). Startgeld und Prämien sind teils sehr hoch, siehe „Spiel“ → „Europapokal“.</p>
   <p><b>Leihen:</b> Im Transferfenster kannst du Ergänzungsspieler und Talente bis 21 Jahre anderer Vereine bis Saisonende ausleihen (Spieler antippen → „Bis Saisonende ausleihen“). Du zahlst eine Leihgebühr und das Gehalt. Eigene Spieler verleihst du über Kader → Spieler → „Verleihen“ in die eigene oder eine tiefere Liga. Der andere Verein zahlt dann das Gehalt, und Spielpraxis lässt Talente wachsen. Zum Saisonende kehren alle Leihspieler zurück (🔁). Beim Ausleihen geht auch eine Kaufoption (teurer, Kauf freiwillig) oder eine Kaufpflicht (billiger, Kauf zum Saisonende sicher).</p>
+  <p><b>Jugend & Scouting:</b> Deine U19 findest du unter Kader → Jugend. Jedes Jahr kommen neue Talente (mehr und bessere mit besserem NLZ). Mit 19 musst du sie hochziehen, sonst gehen sie. Unter Transfers → Scouting gibst du deinem Scout einen Auftrag (Liga, Position, Alter). Gefundene Spieler landen auf der Beobachtungsliste. Je öfter beobachtet, desto enger die Talent-Spanne. Jeden Spieler kannst du im Spielerfenster mit „Beobachten“ auf die Liste setzen.</p>
   <p><b>Verhandeln:</b> Jeder Verein hat je Spieler und Transferfenster seine eigene Schmerzgrenze. Spieler in Form, Stammspieler im Winter und Wechsel zu einem Ligakonkurrenten machen es teurer, ein auslaufender Vertrag billiger. Du kannst in Raten zahlen, einen eigenen Spieler dazugeben (Tausch) oder dem Verein eine Weiterverkaufsbeteiligung anbieten. Nach zu vielen schwachen Angeboten brechen Verein oder Spieler die Gespräche ab. Im Vertrag gehen neben Gehalt und Handgeld auch Einsatz-, Tor- und Zielprämien.</p>
   <p><b>Stimmung & Presse:</b> Im Büro siehst du die Stimmung der Fans und der Mannschaft. Siege, vor allem überraschende, heben sie, Niederlagen drücken sie. Gute Fan-Stimmung bringt mehr Zuschauer, mehr Fanartikel und mehr Heimvorteil. Eine gute Mannschaftsstimmung macht dein Team im Spiel etwas stärker. Nach manchen Spielen stellt die Presse eine Frage. Deine Antwort wirkt auf Fans, Mannschaft und Vorstand. Wer nicht antwortet, verärgert den Vorstand ein wenig.</p>
   <p><b>Spieltag:</b> In der Halbzeit hält das Spiel an, und du wählst deine Kabinenansprache. Während des Spiels kannst du das System umstellen, wechseln und Ausrichtung und Einsatz ändern. Der Druckbalken unter dem Spielstand zeigt, wer gerade überlegen ist. „Deine Spieler“ zeigt die Fitness und Gelbe Karten.</p>
@@ -2967,6 +3053,11 @@ const AKT = {
   allesgelesen: () => { S().post.forEach(m => m.neu = false); speichern(); render(); },
   'angebot-ja': d => { const m = S().post.find(x => x.id === +d.id); const r = FM.verkaufen(m.aktion.pid, m.aktion.k, m.aktion.betrag); m.erledigt = true; m.neu = false; if (r) toast(r); speichern(); render(); },
   'angebot-mehr': d => { const m = S().post.find(x => x.id === +d.id); const r = FM.nachverhandeln(m); m.text += ' – ' + r.text; toast(r.text); speichern(); render(); },
+  hochziehen: d => { const r = FM.hochziehen(+d.id); if (r) return toast(r); speichern(); render(); toast('Profivertrag unterschrieben.'); },
+  'jugend-weg': d => { const p = (S().jugend || []).find(x => x.id === +d.id); if (!p || !confirm(`${p.vn} ${p.nn} aus der Jugend entlassen?`)) return; FM.jugendEntlassen(+d.id); speichern(); render(); },
+  beobachten: d => { const s = S(); FM.scoutInit(); const an = !(s.scout.liste || []).includes(+d.id); FM.beobachten(+d.id, an); speichern(); spielerDialog(+d.id); toast(an ? 'Auf der Beobachtungsliste.' : 'Von der Liste genommen.'); },
+  'scout-start': () => { const r = FM.scoutAuftrag({ liga: $('#sc-liga').value, pos: $('#sc-pos').value, maxAlter: +$('#sc-alter').value }); if (r) return toast(r); speichern(); render(); toast('Der Scout ist unterwegs.'); },
+  'scout-stop': () => { FM.scoutAuftrag(null); speichern(); render(); },
   'angebot-bed': d => { const m = S().post.find(x => x.id === +d.id); const r = FM.angebotBedingung(m, d.k); if (!r.ok) m.text += ' – ' + r.text; toast(r.text); speichern(); render(); },
   'angebot-nein': d => { const m = S().post.find(x => x.id === +d.id); m.erledigt = true; m.neu = false; speichern(); render(); },
   'investor-ja': d => { const s = S(); const m = s.post.find(x => x.id === +d.id); const a = m.aktion; s.investor = { betrag: a.betrag, anteil: a.anteil, ziel: a.ziel, bis: a.bis, liga: a.liga }; FM.kassenbewegung(a.betrag, 'Einstieg Investor'); m.erledigt = true; m.neu = false; speichern(); render(); },
