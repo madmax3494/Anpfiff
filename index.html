@@ -218,7 +218,7 @@ const DATEN = {"stand":"2026-11-15","saison":"2026/27","quelle":"Vereine und Kad
 'use strict';
 /* Anpfiff & Bilanz – Spielkern (ohne Oberfläche, auch in Node testbar) */
 const FM = (function () {
-const VERSION = '2.4.1';
+const VERSION = '2.4.2';
 let S = null; // Spielstand
 
 // ---------- Zufall (mit Startwert, damit Tests wiederholbar sind) ----------
@@ -3168,7 +3168,7 @@ function finanzSeite() {
     <p class="klein leise">Eigene Talente stehen mit 0 € in der Bilanz, obwohl sie einen Marktwert haben (stille Reserve). Marktwert des Kaders: ${g(FM.kader(t).reduce((s2, p) => s2 + FM.marktwert(p), 0))}.</p>`;
   } else if (sub === 'kredite') {
     const r = FM.kreditRahmen();
-    h += `<div class="karte"><h2>Laufende Kredite</h2>${s.kredite.length ? `<table><tr><th>Kredit</th><th class="zahl">Rest</th><th class="zahl">Zins</th><th class="zahl">Rate/Woche</th><th></th></tr>${s.kredite.map((k, i) => `<tr><td>${e(k.name)}</td><td class="zahl">${g(k.rest)}</td><td class="zahl">${(k.zins * 100).toFixed(1)} %</td><td class="zahl">${g(k.rate)}</td><td><button class="knopf k" data-a="tilgen" data-i="${i}">Sondertilgung</button></td></tr>`).join('')}</table>` : '<p class="leise">Keine Kredite.</p>'}</div>
+    h += `<div class="karte"><h2>Laufende Kredite</h2>${s.kredite.length ? `<div class="tabwrap"><table><tr><th>Kredit</th><th class="zahl">Rest</th><th class="zahl">Rate/Woche</th><th></th></tr>${s.kredite.map((k, i) => `<tr><td>${e(k.name)}<div class="klein leise">${(k.zins * 100).toFixed(1)} % Zins</div></td><td class="zahl">${g(k.rest)}</td><td class="zahl">${g(k.rate)}</td><td class="zahl"><button class="knopf k" data-a="tilgen" data-i="${i}" title="Sondertilgung">Tilgen</button></td></tr>`).join('')}</table></div><p class="klein leise">„Tilgen“ zahlt den Kredit aus der Kasse vorzeitig zurück (Sondertilgung).</p>` : '<p class="leise">Keine Kredite.</p>'}</div>
     <div class="karte"><h2>Neuen Kredit aufnehmen</h2>${r.max > 0 ? `<p class="klein">Die Bank gibt bis zu <b>${g(r.max)}</b> zu ${(r.zins * 100).toFixed(1)} % Zins.</p>
     <div class="filter" style="grid-template-columns:2fr 1fr"><label class="feld">Betrag in Tsd. €<input type="number" id="f-kred" min="100" step="100" max="${tsd(r.max)}" value="${tsd(Math.min(r.max, 1e6))}"></label><label class="feld">Laufzeit<select id="f-lz">${[3, 5, 8, 10].map(j => `<option value="${j}" ${j === 5 ? 'selected' : ''}>${j} Jahre</option>`).join('')}</select></label></div><button class="knopf p" data-a="kredit">Kredit aufnehmen</button>` : '<p class="leise">Die Bank gibt derzeit keinen weiteren Kredit.</p>'}</div>`;
   } else if (sub === 'stadion') {
