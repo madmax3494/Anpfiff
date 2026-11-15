@@ -1,6 +1,6 @@
 // Anpfiff & Bilanz, Webapp-Fassung: legt das Spiel einmal auf dem Gerät ab, damit es ohne Netz startet.
 // Abgelegt werden nur die Programmdateien unten. Der Spielstand liegt getrennt davon im Speicher des Browsers.
-const STAND = '8cb9b370162046c1';
+const STAND = 'b3cc83d5ff29d65f';
 const ABLAGE = 'anpfiff-' + STAND;
 const DATEIEN = ['./', 'manifest.webmanifest', 'symbol-180.png', 'symbol-512.png'];
 self.addEventListener('install', (e) => {
