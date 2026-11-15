@@ -110,6 +110,7 @@ input[type=range]{width:100%}
 label.feld{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--leise)}
 label.feld>*{color:var(--text)}
 .filter{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px}
+.filter>label.feld{min-width:0}.filter select{min-width:0;max-width:100%}
 /* Spiel */
 .anzeige{background:var(--kopf);color:#fff;border-radius:var(--rad);padding:14px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;margin-bottom:12px}
 .anzeige .tn{font-weight:700;font-size:16px}
@@ -204,7 +205,7 @@ const DATEN = {"stand":"2026-11-15","saison":"2026/27","quelle":"Vereine und Kad
 'use strict';
 /* Anpfiff & Bilanz – Spielkern (ohne Oberfläche, auch in Node testbar) */
 const FM = (function () {
-const VERSION = '1.9';
+const VERSION = '2.0';
 let S = null; // Spielstand
 
 // ---------- Zufall (mit Startwert, damit Tests wiederholbar sind) ----------
@@ -246,6 +247,9 @@ const POS = ['TW', 'AB', 'MF', 'ST'];
 const POSNAME = { TW: 'Torwart', AB: 'Abwehr', MF: 'Mittelfeld', ST: 'Sturm' };
 const AUSR = { '-1': 'Defensiv', '0': 'Ausgewogen', '1': 'Offensiv', '2': 'Brechstange' };
 const EINSATZ = { '-1': 'Zurückhaltend', '0': 'Normal', '1': 'Hart' };
+const PRESSING = { '-1': 'Tief stehen', '0': 'Normal', '1': 'Hohes Pressing' };
+const SPIELWEISE = { '-1': 'Konter', '0': 'Gemischt', '1': 'Ballbesitz' };
+const ROLLEN = { kap: 'Kapitän', elf: 'Elfmeterschütze', std: 'Standardschütze' };
 
 const VORN = ['Lukas','Jonas','Leon','Finn','Paul','Niklas','Tim','Jan','Felix','Moritz','Luca','Ben','Noah','Elias','Julian','Tom','Max','Erik','Malte','Henrik','Marvin','Kevin','Dennis','Florian','Tobias','Simon','Fabian','Mats','Ole','Mika','Emre','Can','Yusuf','Arda','Luis','Mateo','Nico','Bastian','Jannik','Lennart'];
 const NACHN = ['Müller','Schmidt','Schneider','Fischer','Weber','Meyer','Wagner','Becker','Hoffmann','Schulz','Koch','Richter','Klein','Wolf','Neumann','Schwarz','Zimmermann','Braun','Krüger','Hartmann','Lange','Werner','Krause','Lehmann','Köhler','Brandt','Petersen','Jansen','Hansen','Thomsen','Albers','Lüders','Behrens','Kaya','Yilmaz','Öztürk','Nowak','Kowalski','Brandes','Ahrens','Voss','Harms','Claussen','Martens'];
@@ -559,8 +563,8 @@ function aufstellungPruefen(t) {
 // ---------- Spielberechnung ----------
 function neuesSpiel(spiel) {
   euroKader(team(spiel.h)); euroKader(team(spiel.g));
-  const seite = (id, heim) => { const t = team(id); aufstellungPruefen(t); return { id, elf: t.elf.slice(), slot: slots(t.form).slice(0, t.elf.length), form: t.form, bank: t.bank.slice(), raus: [], wechsel: 0, ausr: t.taktik.ausr, einsatz: t.taktik.einsatz, heim: heim && !spiel.neutral, rot: 0 }; };
-  const M = { spiel, min: 0, halb: 45 + ri(0, 3), ende: 90 + ri(1, 5), phase: 1, tore: [0, 0], s: [seite(spiel.h, true), seite(spiel.g, false)], ev: [], fit: {}, gelb: {}, tor: {}, vorl: {}, mins: {}, verl: {}, stat: { sch: [0, 0], aufs: [0, 0], ecken: [0, 0], fouls: [0, 0], besitz: [0, 0], karten: [0, 0] }, fertig: false };
+  const seite = (id, heim) => { const t = team(id); aufstellungPruefen(t); taktikPruefen(t); const kt = id === S.mein ? t.taktik : kiTaktik(t, team(heim ? spiel.g : spiel.h)); return { id, elf: t.elf.slice(), slot: slots(t.form).slice(0, t.elf.length), form: t.form, bank: t.bank.slice(), raus: [], wechsel: 0, ausr: t.taktik.ausr, einsatz: t.taktik.einsatz, press: kt.press, weise: kt.weise, rollen: id === S.mein ? Object.assign({}, t.rollen) : {}, heim: heim && !spiel.neutral, rot: 0 }; };
+  const M = { spiel, min: 0, halb: 45 + ri(0, 3), ende: 90 + ri(1, 5), phase: 1, tore: [0, 0], s: [seite(spiel.h, true), seite(spiel.g, false)], ev: [], fit: {}, gelb: {}, tor: {}, vorl: {}, mins: {}, verl: {}, stat: { sch: [0, 0], aufs: [0, 0], ecken: [0, 0], fouls: [0, 0], besitz: [0, 0], karten: [0, 0], xg: [0, 0], gc: [0, 0], std: [0, 0] }, tf: [[0, 0], [0, 0]], fertig: false };
   M.s.forEach(s => s.elf.forEach(id => { M.fit[id] = sp(id).fit; M.mins[id] = 0; }));
   // Pokaleffekt: Der Außenseiter wächst über sich hinaus, der Favorit nimmt es leichter
   M.pb = [0, 0]; if (spiel.pokal) { const d = team(spiel.h).staerke - team(spiel.g).staerke; M.pb[d < 0 ? 0 : 1] = Math.min(13, Math.abs(d) * 0.6); }
@@ -570,19 +574,51 @@ function neuesSpiel(spiel) {
 function ev(M, min, seite, typ, text) { M.ev.push({ min: min, s: seite, typ, text }); }
 function minText(M, m) { return m > 120 && M.phase === 3 ? '120+' + (m - 120) : m > 90 && M.phase === 2 ? '90+' + (m - 90) : m > 45 && M.phase === 1 ? '45+' + (m - 45) : String(m); }
 // Torquote: Grundwert und wie stark der Abstand Sturm gegen Abwehr wirkt (abgestimmt auf echte Torschnitte, v1.6)
-const TORQ = { b: 0.068, s: 17, max: 0.32, liga: [1.06, 1.12, 1.22, 1.3] };
+const TORQ = { b: 0.057, s: 17, max: 0.32, liga: [1.06, 1.2, 1.31, 1.39] };
+// ---------- Taktik und Rollen (v2.0) ----------
+function taktikPruefen(t) { if (!t.taktik) t.taktik = { ausr: 0, einsatz: 0 }; if (t.taktik.press == null) t.taktik.press = 0; if (t.taktik.weise == null) t.taktik.weise = 0; if (!t.rollen) t.rollen = {}; }
+// Computer-Trainer: Favoriten spielen auf Ballbesitz, Außenseiter auf Konter; manche Trainer pressen gern
+function kiTaktik(t, g) {
+  const d = t.staerke - (g ? g.staerke : t.staerke), h = hr('taktik' + t.name);
+  return { weise: d > 4 ? 1 : d < -4 ? -1 : h < 0.2 ? -1 : h > 0.85 ? 1 : 0, press: d > 3 && h > 0.45 ? 1 : d < -6 && h < 0.4 ? -1 : 0 };
+}
+// verborgene Fähigkeiten, fest pro Spieler
+function elfKunst(p) { return (hr('elf' + p.id + p.nn) - 0.5) * 0.14; }
+function stdKunst(p) { return 0.35 + hr('std' + p.id + p.nn) * 0.85; }
+function fuehrung(p) { return clamp((alter(p) - 21) / 10, 0, 1) * 0.6 + hr('kap' + p.id + p.nn) * 0.4; }
+// Wert 0..1 für die Sterne in der Aufstellung
+function rollenWert(p, r) { return r === 'elf' ? clamp(0.5 + elfKunst(p) / 0.14, 0, 1) : r === 'std' ? clamp((stdKunst(p) - 0.35) / 0.85, 0, 1) : clamp(fuehrung(p), 0, 1); }
+function rollenAuto(ids, r) {
+  const feld = ids.filter(id => sp(id) && sp(id).pos !== 'TW'); if (!feld.length) return null;
+  const w = id => { const p = sp(id); return r === 'elf' ? p.st + (p.pos === 'ST' ? 3 : 0) : r === 'std' ? p.st + (p.pos === 'MF' ? 4 : 0) : alter(p) * 2 + p.st * 0.5; };
+  return feld.slice().sort((a, b) => w(b) - w(a))[0];
+}
+function rolleAktiv(M, i, r) { const s = M.s[i]; const id = s.rollen && s.rollen[r]; return id && s.elf.includes(id) ? id : rollenAuto(s.elf, r); }
+function rolleSetzen(r, id) { const t = team(S.mein); taktikPruefen(t); if (!ROLLEN[r]) return false; if (!id) delete t.rollen[r]; else if (t.kader.includes(+id)) t.rollen[r] = +id; else return false; return true; }
+function rollenAnzeige(t) { taktikPruefen(t); const r = {}; Object.keys(ROLLEN).forEach(k => { const id = t.rollen[k]; r[k] = { id: id && t.kader.includes(id) ? id : null, auto: rollenAuto(t.elf, k) }; }); return r; }
+// Wie gut passt die Spielweise des Angreifers i gegen den Verteidiger? Faktor auf die Chancenqualität
+function taktikFaktor(M, i, L) {
+  const a = M.s[i], d = M.s[1 - i]; let f = 1;
+  if (d.press === 1) f *= a.weise === -1 ? 1.06 : 0.93;
+  if (d.press === -1) f *= 0.94;
+  if (a.weise === -1) { let b = 0; if (d.ausr >= 1) b += 0.08; if (d.weise === 1) b += 0.06; if (L[1 - i].MF > L[i].MF + 3) b += 0.04; f *= b ? 1 + b : 0.95; }
+  if (a.weise === 1) f *= L[i].MF > L[1 - i].MF + 3 ? 1.06 : d.weise === -1 ? 0.95 : 0.98;
+  M.tf[i][0] += f; M.tf[i][1]++;
+  return f;
+}
 function linien(M, i) {
   const s = M.s[i]; const r = { TW: [], AB: [], MF: [], ST: [] };
   s.elf.forEach((id, k) => { const p = sp(id); const f = M.fit[id]; r[s.slot[k]].push((p.st + p.form * 0.5) * posFaktor(p.pos, s.slot[k]) * (1 - (100 - f) * 0.0035)); });
   const std = { AB: 4, MF: 4, ST: 2 };
   const avg = (a, k) => a.length ? a.reduce((x, y) => x + y, 0) / a.length * (k ? Math.pow(a.length / std[k], 0.3) : 1) : 25;
-  const heim = (s.heim ? 2.2 * (s.id === S.mein ? 0.8 + (S.fanSt == null ? 60 : S.fanSt) / 250 : 1) : 0) + (M.pb ? M.pb[i] : 0) + (s.id === S.mein ? grad().staerke + moralBonus() : 0) + (M.ab && M.phase >= 2 ? M.ab[i] : 0); const unter = 1 - 0.07 * (11 - s.elf.length);
+  const heim = (s.heim ? 2.2 * (s.id === S.mein ? 0.8 + (S.fanSt == null ? 60 : S.fanSt) / 250 : 1) : 0) + (M.pb ? M.pb[i] : 0) + (s.id === S.mein ? grad().staerke + moralBonus() : 0) + (M.ab && M.phase >= 2 ? M.ab[i] : 0) + kapBonus(M, i); const unter = 1 - 0.07 * (11 - s.elf.length);
   const e = 1 + 0.03 * s.einsatz;
   let TW = (avg(r.TW) + heim) * e * unter, AB = (avg(r.AB, 'AB') + heim) * e * unter, MF = (avg(r.MF, 'MF') + heim) * e * unter, ST = (avg(r.ST, 'ST') + heim) * e * unter;
   if (s.id === S.mein && S.training && S.training.schwerpunkt === 'taktik') { TW *= 1.02; AB *= 1.02; MF *= 1.02; ST *= 1.02; }
   const a = s.ausr; if (a === -1) { AB *= 1.06; ST *= 0.92; } if (a === 1) { ST *= 1.06; AB *= 0.94; } if (a === 2) { ST *= 1.1; AB *= 0.86; }
   return { TW, AB, MF, ST };
 }
+function kapBonus(M, i) { const s = M.s[i]; if (!s.rollen) return 0; const key = s.wechsel * 100 + s.elf.length; if (s.kapK !== key) { const k = rolleAktiv(M, i, 'kap'); s.kapW = k ? fuehrung(sp(k)) * 0.8 : 0; s.kapK = key; } return s.kapW; }
 function torschuetzeWaehlen(M, i, ausser) {
   const s = M.s[i]; const w = s.elf.map((id, k) => id === ausser ? 0 : ({ TW: 0.02, AB: 0.8, MF: 2.4, ST: 5 })[s.slot[k]] * Math.pow(sp(id).st / 70, 2));
   let x = rnd() * w.reduce((a, b) => a + b, 0); for (let k = 0; k < w.length; k++) { x -= w[k]; if (x <= 0) return s.elf[k]; } return s.elf[s.elf.length - 1];
@@ -594,18 +630,18 @@ function spielSchritt(M) {
   const m = M.min; const mt = minText(M, m);
   const L = [linien(M, 0), linien(M, 1)];
   let anteil = Math.pow(L[0].MF, 4) / (Math.pow(L[0].MF, 4) + Math.pow(L[1].MF, 4));
-  anteil += 0.05 * (M.s[0].ausr - M.s[1].ausr) / 2; anteil = clamp(anteil, 0.18, 0.82);
+  anteil += 0.05 * (M.s[0].ausr - M.s[1].ausr) / 2 + 0.03 * ((M.s[0].press || 0) - (M.s[1].press || 0)) + 0.04 * ((M.s[0].weise || 0) - (M.s[1].weise || 0)); anteil = clamp(anteil, 0.18, 0.82);
   M.stat.besitz[0] += anteil; M.stat.besitz[1] += 1 - anteil;
   M.dr = clamp((M.dr == null ? 0.5 : M.dr) * 0.85 + 0.15 * anteil, 0, 1);
   // Ermüdung
   M.s.forEach(s => { const kond = s.id === S.mein && S.training && S.training.schwerpunkt === 'kondition' ? 0.85 : 1;
-    s.elf.forEach(id => { M.mins[id] = (M.mins[id] || 0) + 1; M.fit[id] = Math.max(35, M.fit[id] - (0.2 + 0.05 * s.einsatz) * kond * (sp(id).pos === 'TW' ? 0.3 : 1) * (alter(sp(id)) > 31 ? 1.15 : 1)); }); });
+    s.elf.forEach(id => { M.mins[id] = (M.mins[id] || 0) + 1; M.fit[id] = Math.max(35, M.fit[id] - (0.2 + 0.05 * s.einsatz + (s.press === 1 ? 0.05 : s.press === -1 ? -0.03 : 0)) * kond * (sp(id).pos === 'TW' ? 0.3 : 1) * (alter(sp(id)) > 31 ? 1.15 : 1)); }); });
   // Torchance
-  if (rnd() < 0.25) {
+  if (rnd() < 0.25 * (M.s[0].press === -1 ? 0.95 : 1) * (M.s[1].press === -1 ? 0.95 : 1)) {
     const i = rnd() < anteil ? 0 : 1, o = 1 - i;
     if (M.tq == null) M.tq = M.spiel && !M.spiel.pokal && !M.spiel.euro && M.spiel.l != null ? TORQ.liga[Math.min(3, M.spiel.l)] : 1;
-    const q = clamp(TORQ.b * M.tq * Math.exp((L[i].ST - (0.65 * L[o].AB + 0.35 * L[o].TW)) / TORQ.s), 0.03, TORQ.max);
-    const sch = torschuetzeWaehlen(M, i); M.stat.sch[i]++;
+    const q = clamp(TORQ.b * M.tq * Math.exp((L[i].ST - (0.65 * L[o].AB + 0.35 * L[o].TW)) / TORQ.s) * taktikFaktor(M, i, L), 0.03, TORQ.max);
+    const sch = torschuetzeWaehlen(M, i); M.stat.sch[i]++; M.stat.xg[i] += q; if (q >= 0.15) M.stat.gc[i]++;
     const tn = team(M.s[i].id).kurz;
     const x = rnd();
     if (x < q) {
@@ -613,9 +649,9 @@ function spielSchritt(M) {
       let vo = null; if (rnd() < 0.72) { vo = torschuetzeWaehlen(M, i, sch); M.vorl[vo] = (M.vorl[vo] || 0) + 1; }
       ev(M, mt, i, 'tor', pick([`TOR für ${tn}! ${nm(sch)} trifft${vo ? ' nach Vorlage von ' + nm(vo) : ''}.`, `TOR! ${nm(sch)} schiebt eiskalt ein${vo ? ', ' + nm(vo) + ' hatte aufgelegt' : ''}.`, `TOR! ${nm(sch)} köpft${vo ? ' nach Flanke von ' + nm(vo) : ''} ein.`, `TOR für ${tn}! Abstauber von ${nm(sch)}.`]) + ` ${M.tore[0]}:${M.tore[1]}`);
     } else if (x < q + 0.32) { M.stat.aufs[i]++; M.dr = clamp(M.dr + (i === 0 ? 0.04 : -0.04), 0, 1); const tw = M.s[o].elf.find((id, k) => M.s[o].slot[k] === 'TW'); ev(M, mt, i, 'chance', pick([`${nm(sch)} zieht ab, aber ${tw ? nm(tw) : 'der Torwart'} pariert stark.`, `Kopfball von ${nm(sch)}, ${tw ? nm(tw) : 'der Torwart'} ist zur Stelle.`, `${nm(sch)} scheitert frei vor dem Tor an ${tw ? nm(tw) : 'dem Torwart'}.`]));
-      if (rnd() < 0.4) { M.stat.ecken[i]++; } }
+      if (rnd() < 0.4) ecke(M, i, mt); }
     else if (x < q + 0.62) ev(M, mt, i, 'chance', pick([`${nm(sch)} schießt knapp vorbei.`, `${nm(sch)} trifft nur den Pfosten!`, `Fernschuss von ${nm(sch)} – drüber.`, `${nm(sch)} verzieht aus guter Position.`]));
-    else { M.stat.ecken[i]++; if (rnd() < 0.3) ev(M, mt, i, 'info', `Ecke für ${tn}, ${nm(sch)} wird geblockt.`); }
+    else { if (!ecke(M, i, mt) && rnd() < 0.3) ev(M, mt, i, 'info', `Ecke für ${tn}, ${nm(sch)} wird geblockt.`); }
   }
   // Elfmeter
   if (rnd() < 0.0035) elfmeterImSpiel(M, rnd() < anteil ? 0 : 1, mt);
@@ -626,7 +662,7 @@ function spielSchritt(M) {
     ev(M, mt, -1, 'info', t); } }
   // Fouls und Karten
   M.s.forEach((s, i) => {
-    if (rnd() < 0.14) M.stat.fouls[i]++;
+    if (rnd() < 0.14) { M.stat.fouls[i]++; if (rnd() < 0.05) freistoss(M, 1 - i, mt); }
     const kf = s.einsatz === 1 ? 1.8 : s.einsatz === -1 ? 0.6 : 1;
     if (rnd() < 0.019 * kf) {
       const id = pick(s.elf.filter((x, k) => s.slot[k] !== 'TW')); if (!id) return;
@@ -645,7 +681,7 @@ function spielSchritt(M) {
   });
   // Computer-Trainer wechselt und stellt um
   M.s.forEach((s, i) => { if (s.id !== S.mein || M.auto) kiTrainer(M, i); });
-  if (M.phase === 1 && m >= M.halb) { M.phase = 2; M.halbzeit = true; ev(M, '45', -1, 'pause', `Halbzeit. ${M.tore[0]}:${M.tore[1]}`); M.min = 45; M.s.forEach(s => s.elf.forEach(id => M.fit[id] = Math.min(100, M.fit[id] + 4))); }
+  if (M.phase === 1 && m >= M.halb) { M.phase = 2; M.halbzeit = true; ev(M, '45', -1, 'pause', `Halbzeit. ${M.tore[0]}:${M.tore[1]}`); M.min = 45; M.s.forEach(s => s.elf.forEach(id => M.fit[id] = Math.min(100, M.fit[id] + 4))); M.htT = M.tore.slice(); }
   else if (M.phase === 2 && m >= M.ende) {
     if (koSpiel(M.spiel) && gleichstand(M)) { // Pokal, Rückspiel oder Finale: Verlängerung
       M.phase = 3; M.nv = true; ev(M, minText(M, m), -1, 'pause', `Nach 90 Minuten steht es ${M.tore[0]}:${M.tore[1]}${M.spiel.hinT ? ' (insgesamt ' + aggregat(M.spiel, M.tore).join(':') + ')' : ''}. Es gibt Verlängerung!`); M.min = 90; M.ende = 120 + ri(0, 2); M.s.forEach(s => s.elf.forEach(id => M.fit[id] = Math.min(100, M.fit[id] + 3)));
@@ -657,11 +693,29 @@ function spielSchritt(M) {
     ev(M, minText(M, m), -1, 'abpfiff', `Abpfiff! ${team(M.s[0].id).kurz} ${M.tore[0]}:${M.tore[1]} ${team(M.s[1].id).kurz}${zus}. ${team(pokalSiegerAusM(M)).name} ist weiter.`);
   }
 }
+// Standards (v2.0): Ecken und Freistöße, der Standardschütze macht den Unterschied
+function stdFaktor(M, i) { const s = M.s[i], key = s.wechsel * 100 + s.elf.length; if (s.stdK === key) return s.stdF; s.stdK = key; const id = rolleAktiv(M, i, 'std'); const k = id ? stdKunst(sp(id)) : 0.5; s.stdF = { id, f: 0.7 + k * 0.5 + (s.id === S.mein && S.training && S.training.schwerpunkt === 'standards' ? 0.15 : 0) }; return s.stdF; }
+function standardTor(M, i, mt, schuetze, vorlage, text) {
+  M.tore[i]++; M.stat.aufs[i]++; M.stat.std[i]++; M.tor[schuetze] = (M.tor[schuetze] || 0) + 1;
+  if (vorlage && vorlage !== schuetze) M.vorl[vorlage] = (M.vorl[vorlage] || 0) + 1;
+  ev(M, mt, i, 'tor', text + ` ${M.tore[0]}:${M.tore[1]}`);
+}
+function ecke(M, i, mt) {
+  M.stat.ecken[i]++; const s = M.s[i]; const x = stdFaktor(M, i); const q = 0.02 * x.f; M.stat.xg[i] += q;
+  if (rnd() >= q) return false;
+  const kopf = s.elf.filter((id, k) => s.slot[k] === 'AB' || s.slot[k] === 'ST').filter(id => id !== x.id); const sch = kopf.length ? pick(kopf) : torschuetzeWaehlen(M, i);
+  M.stat.sch[i]++; standardTor(M, i, mt, sch, x.id, `TOR für ${team(s.id).kurz}! Ecke von ${x.id ? nm(x.id) : 'rechts'}, ${nm(sch)} köpft ein.`); return true;
+}
+function freistoss(M, i, mt) {
+  const s = M.s[i]; const x = stdFaktor(M, i); if (!x.id) return; const q = 0.06 * x.f; M.stat.xg[i] += q; M.stat.sch[i]++;
+  if (rnd() < q) standardTor(M, i, mt, x.id, null, `TOR für ${team(s.id).kurz}! ${nm(x.id)} zirkelt den Freistoß ins Netz.`);
+  else if (rnd() < 0.35) { M.stat.aufs[i]++; ev(M, mt, i, 'chance', `Freistoß ${nm(x.id)} – knapp ${pick(['vorbei', 'drüber', 'an die Latte'])}!`); }
+}
 function elfmeterImSpiel(M, i, mt) {
   const s = M.s[i], o = 1 - i; const feld = s.elf.filter((id, k) => s.slot[k] !== 'TW'); if (!feld.length) return;
-  const sch = feld.slice().sort((a, b) => (sp(b).st + (sp(b).pos === 'ST' ? 3 : 0)) - (sp(a).st + (sp(a).pos === 'ST' ? 3 : 0)))[0];
+  const sch = rolleAktiv(M, i, 'elf') || feld[0];
   const tw = M.s[o].elf.find((id, k) => M.s[o].slot[k] === 'TW'); const tn = team(s.id).kurz;
-  const q = clamp(0.76 + (sp(sch).st - (tw ? sp(tw).st : 55)) * 0.004, 0.62, 0.9); M.stat.sch[i]++; M.stat.aufs[i]++;
+  const q = clamp(0.76 + (sp(sch).st - (tw ? sp(tw).st : 55)) * 0.004 + elfKunst(sp(sch)), 0.55, 0.93); M.stat.sch[i]++; M.stat.aufs[i]++; M.stat.xg[i] += 0.76;
   if (rnd() < q) { M.tore[i]++; M.tor[sch] = (M.tor[sch] || 0) + 1; ev(M, mt, i, 'tor', `ELFMETER für ${tn}! ${nm(sch)} verwandelt sicher. ${M.tore[0]}:${M.tore[1]}`); }
   else ev(M, mt, i, 'chance', `Elfmeter für ${tn}! ${nm(sch)} tritt an … ${tw ? nm(tw) + ' hält!' : 'drüber!'}`);
   M.dr = clamp((M.dr == null ? 0.5 : M.dr) + (i === 0 ? 0.08 : -0.08), 0, 1);
@@ -670,11 +724,11 @@ function gleichstand(M) { const a = aggregat(M.spiel, M.tore); return a[0] === a
 function pokalSiegerAusM(M) { const a = aggregat(M.spiel, M.tore); const i = a[0] !== a[1] ? (a[0] > a[1] ? 0 : 1) : (M.elf && M.elf[1] > M.elf[0] ? 1 : 0); return M.s[i].id; }
 function elfmeterschiessen(M) {
   ev(M, '120', -1, 'pause', `Unentschieden nach Verlängerung. Elfmeterschießen!`);
-  const reihe = M.s.map(s => s.elf.filter((id, k) => s.slot[k] !== 'TW').sort((a, b) => sp(b).st - sp(a).st).concat(s.elf.filter((id, k) => s.slot[k] === 'TW')));
+  const reihe = M.s.map((s, i) => { const r = s.elf.filter((id, k) => s.slot[k] !== 'TW').sort((a, b) => (sp(b).st + elfKunst(sp(b)) * 100) - (sp(a).st + elfKunst(sp(a)) * 100)); const e1 = rolleAktiv(M, i, 'elf'); if (e1 && r.includes(e1)) { r.splice(r.indexOf(e1), 1); r.unshift(e1); } return r.concat(s.elf.filter((id, k) => s.slot[k] === 'TW')); });
   const tw = M.s.map(s => s.elf.find((id, k) => s.slot[k] === 'TW'));
   const t = [0, 0], n = [0, 0];
   const schuss = i => { const r = reihe[i]; const id = r[n[i] % r.length]; n[i]++; const g = tw[1 - i];
-    const q = clamp(0.76 + (sp(id).st - (g ? sp(g).st : 55)) * 0.004 + (M.fit[id] - 70) * 0.001, 0.62, 0.9);
+    const q = clamp(0.76 + (sp(id).st - (g ? sp(g).st : 55)) * 0.004 + (M.fit[id] - 70) * 0.001 + elfKunst(sp(id)), 0.55, 0.93);
     const drin = rnd() < q; if (drin) t[i]++;
     ev(M, '', i, drin ? 'elf' : 'chance', `${team(M.s[i].id).kurz}: ${nm(id)} ${drin ? 'verwandelt' : pick(['scheitert am Torwart', 'schießt drüber', 'trifft nur den Pfosten'])}. ${t[0]}:${t[1]}`); };
   for (let k = 0; k < 30; k++) {
@@ -708,6 +762,30 @@ function kiTrainer(M, i) {
   }
 }
 function spielSofort(M) { M.auto = true; while (!M.fertig) spielSchritt(M); return M; }
+// Spielanalyse nach Abpfiff (v2.0): Sätze aus Sicht der Seite i
+function analyse(M, i) {
+  const o = 1 - i, st = M.stat, s = M.s[i], z = [], k1 = x => x.toFixed(1).replace('.', ',');
+  const xg = st.xg || [0, 0], gc = st.gc || [0, 0], bs = st.besitz[0] + st.besitz[1] || 1, bes = Math.round(st.besitz[i] / bs * 100);
+  z.push(`Erwartete Tore (xG): ${k1(xg[i])} zu ${k1(xg[o])}, Großchancen ${gc[i]} zu ${gc[o]}, Ballbesitz ${bes} %.`);
+  const eff = M.tore[i] - xg[i], gEff = M.tore[o] - xg[o];
+  if (eff >= 1.2) z.push('Sehr effizient: Deine Mannschaft hat mehr Tore gemacht, als die Chancen erwarten ließen.');
+  else if (eff <= -1.2) z.push('Chancenwucher: Aus den Möglichkeiten hätten mehrere Tore mehr werden müssen.');
+  if (gEff >= 1.2) z.push('Der Gegner hat fast jede Gelegenheit genutzt.'); else if (gEff <= -1.2) z.push('Glück gehabt: Der Gegner hat beste Chancen liegen gelassen.');
+  if (xg[i] > xg[o] + 0.8 && M.tore[i] <= M.tore[o]) z.push('Nach Chancen wäre ein Sieg verdient gewesen.');
+  if (xg[o] > xg[i] + 0.8 && M.tore[i] >= M.tore[o]) z.push('Nach Chancen war der Gegner besser – das Ergebnis schmeichelt.');
+  const tf = M.tf || [[0, 0], [0, 0]], af = tf[i][1] ? tf[i][0] / tf[i][1] : 1, df = tf[o][1] ? tf[o][0] / tf[o][1] : 1, pz = x => Math.round(Math.abs(x - 1) * 100);
+  const wn = SPIELWEISE[s.weise || 0], pn2 = PRESSING[s.press || 0];
+  if (af >= 1.03) z.push(`Deine Spielweise (${wn}) hat gegriffen: Deine Chancen waren etwa ${pz(af)} % besser als normal.`);
+  else if (af <= 0.97) z.push(`Deine Spielweise (${wn}) passte nicht zum Gegner: Deine Chancen waren etwa ${pz(af)} % schlechter als normal.`);
+  if (df <= 0.97) z.push(`Deine Defensive (${pn2}) hat dem Gegner das Leben schwer gemacht: Seine Chancen waren etwa ${pz(df)} % schlechter.`);
+  else if (df >= 1.03) z.push(`Der Gegner hat Lücken gefunden: Gegen dein ${pn2} waren seine Chancen etwa ${pz(df)} % besser.`);
+  const std = st.std || [0, 0]; if (std[i]) { const r = rolleAktiv(M, i, 'std'); z.push(`${std[i]} Tor${std[i] > 1 ? 'e' : ''} nach Standards${r ? ' (Standardschütze ' + nm(r) + ')' : ''}.`); } if (std[o]) z.push(`Der Gegner traf ${std[o]}-mal nach einem Standard.`);
+  const fits = s.elf.map(id => M.fit[id]).filter(x => x != null); const fa = fits.length ? fits.reduce((a, b) => a + b, 0) / fits.length : 80;
+  if (fa < 66) z.push(`Am Ende war deine Mannschaft platt (Fitness im Schnitt ${Math.round(fa)}).${s.press === 1 ? ' Hohes Pressing kostet viel Kraft.' : ''} Früher wechseln hilft.`);
+  if (M.htT) { const h2 = [M.tore[0] - M.htT[0], M.tore[1] - M.htT[1]]; if (h2[i] - h2[o] >= 2) z.push(`Starke zweite Hälfte: ${h2[i]}:${h2[o]} nach der Pause.`); else if (h2[o] - h2[i] >= 2) z.push(`Einbruch nach der Pause: ${h2[i]}:${h2[o]} in der zweiten Hälfte.`); }
+  if (M.noten) { const b = Object.entries(M.noten).sort((a, b) => a[1] - b[1])[0]; if (b) { const p = sp(+b[0]); if (p) z.push(`Bester Spieler: ${p.vn ? p.vn + ' ' : ''}${p.nn} (${team(p.team) ? team(p.team).kurz : ''}, Note ${b[1].toFixed(1).replace('.', ',')}).`); } }
+  return z;
+}
 function note(M, i, id) {
   const d = M.tore[i] - M.tore[1 - i];
   let n = 3.5 - d * 0.25 - (M.tor[id] || 0) * 0.8 - (M.vorl[id] || 0) * 0.4 + gauss() * 0.45;
@@ -904,7 +982,7 @@ function zielBestimmen() {
 const STAB = { co: ['Co-Trainer', 1.2, 'Mehr Entwicklung für alle Spieler'], tw: ['Torwarttrainer', 0.8, 'Torhüter entwickeln sich schneller'], ath: ['Athletiktrainer', 0.8, 'Bessere Erholung, weniger Verletzungen'],
   med: ['Mannschaftsarzt & Physio', 1, 'Verletzte werden schneller fit'], scout: ['Scout', 0.9, 'Genauere Talenteinschätzung, Talentberichte'] };
 const STAB_STUFEN = ['keiner', 'Teilzeit', 'Vollzeit', 'Spitzenkraft'];
-const TRAINING = { ausgewogen: 'Ausgewogen', kondition: 'Kondition (weniger Ermüdung im Spiel)', technik: 'Technik (schnellere Entwicklung)', taktik: 'Taktik (etwas stärker im Spiel)', jugend: 'Jugend (Spieler bis 21 Jahre gezielt fördern)' };
+const TRAINING = { ausgewogen: 'Ausgewogen', kondition: 'Kondition (weniger Ermüdung im Spiel)', technik: 'Technik (schnellere Entwicklung)', taktik: 'Taktik (etwas stärker im Spiel)', standards: 'Standards (mehr Gefahr bei Ecken und Freistößen)', jugend: 'Jugend (Spieler bis 21 Jahre gezielt fördern)' };
 const INTENSITAET = { '-1': 'Locker (bessere Erholung, langsamere Entwicklung)', '0': 'Normal', '1': 'Hart (schnellere Entwicklung, mehr Ermüdung und Verletzungen)' };
 function stabStandard(t) { t = t || meinTeam(); const st = tst(t); const d = [3, 2, 1, 0][st]; return { co: d, tw: d, ath: d, med: d, scout: [2, 1, 1, 0][st] }; }
 function stabKosten(k, lvl, t) { t = t || meinTeam(); return lvl > 0 ? [1, 2.4, 4.8][lvl - 1] * [250e3, 90e3, 35e3, 12e3][tst(t)] * STAB[k][1] : 0; }
@@ -2202,7 +2280,7 @@ return { editorSpeichern, editorLoeschen, importLaufend, alleTeams, leistungsFak
   weiter, wocheAbschliessen, meinSpiel, naechstesMeinSpiel, spieleDerWoche, fensterOffen, rundenAnzahl,
   erloesSchaetzung, summe, kreditRahmen, kreditAufnehmen, kreditTilgen, dispoLimit, eigenkapital, bilanzJetzt, prognoseSaisonende, transferSchulden, spielerwerte, stadionAusbauen, stadionAusbauKosten,
   sponsorWaehlen, sponsorAktiv, post, markt, abloeseForderung, transferAnfrage, vertragsAntwort, transferAbschliessen, verkaufen, vertragAufloesen, abfindung, verlaengern, nachverhandeln, restJahre,
-  leihPruefen, ausleihen, leihZiele, verleihen, verliehen, leihGebuehr, istLeihe, leihenBeenden, stimmungInit, stimmungAendern, presseAntwort, PRESSE, wirkungText, fanFaktor, moralBonus, ANSPRACHE, ansprache, formationLive,
+  leihPruefen, ausleihen, leihZiele, verleihen, verliehen, leihGebuehr, istLeihe, leihenBeenden, stimmungInit, stimmungAendern, presseAntwort, PRESSE, wirkungText, fanFaktor, moralBonus, PRESSING, SPIELWEISE, ROLLEN, taktikPruefen, kiTaktik, rollenWert, rolleSetzen, rollenAnzeige, rollenAuto, analyse, elfKunst, stdKunst, fuehrung, taktikFaktor, ANSPRACHE, ansprache, formationLive,
   csvExport, csvParse, importAnwenden, kassenbewegung, buchen, bj, setS: o => { S = o; },
   setDaten, voll, stufe, tst, REGIONEN, direktRegion, abstiegsPlaetze, fortsetzen, offenesSpiel, pokalRunde, meinPokalSpiel, pokalSpiele, POKAL_RUNDEN, POKAL_WOCHEN, POKAL_PRAEMIE, POKAL_FINALE,
   angebotBedingung, angeboteFuerMeineSpieler, wvbFuerMich, kiLeihen, kiTransfers, potSpanne, scoutInit, scoutAuftrag, beobachten, scoutWoche, SCOUT_KOSTEN, jugendInit, jugendSpanne, hochziehen, jugendEntlassen, jugendSaison, jugendWoche, saisonLeistung, verh, tauschWert, wvbRabatt, erwartung, boniWert, boniText, leihOptionen, leihKaufen, ausgeliehen, SCHWIERIG, TITEL, titelText, bestenliste, ewigeTabelle, landName, ligaRekordListe, ligaRekordeInit, TORQ, gesamtRang, rueckblickBauen,
@@ -2446,8 +2524,17 @@ function trainingHtml(t) {
     <div class="zwischen" style="margin-top:8px"><span>${mk >= 0 ? 'Mehrkosten' : 'Ersparnis'} gegenüber dem üblichen Stab</span><b class="${mk > 0 ? 'minus' : 'plus'}">${g(Math.abs(mk))} pro Jahr</b></div>
     <p class="klein leise">Die Kosten für den üblichen Stab stecken schon in der Verwaltung. Abgerechnet wird nur, was du mehr oder weniger ausgibst. Wer entlassen wird, bekommt eine Abfindung (ein Viertel der Jahreskosten). Wirkung nur für deinen Verein: besserer Stab als üblich wirkt besser, schlechterer schlechter.</p></div></div>`;
 }
+function rSterne(x) { const n = Math.max(1, Math.round(x * 5)); return '<span class="sterne" title="' + n + ' von 5">' + '★'.repeat(n) + '<span class="leise">' + '★'.repeat(5 - n) + '</span></span>'; }
+function rollenHtml(t) {
+  const ra = FM.rollenAnzeige(t); const feld = t.elf.map(id => FM.sp(id)).filter(p => p && p.pos !== 'TW');
+  const andere = FM.kader(t).filter(p => p.pos !== 'TW' && !t.elf.includes(p.id) && ra && Object.values(ra).some(r => r.id === p.id));
+  return `<div class="karte"><h2>Rollen</h2><table>${Object.entries(FM.ROLLEN).map(([k, n]) => { const r = ra[k]; const akt = r.id && t.elf.includes(r.id) ? r.id : r.auto; const p = akt ? FM.sp(akt) : null;
+    return `<tr><td><b>${n}</b><div class="klein leise">${p ? (r.id && t.elf.includes(r.id) ? '' : 'automatisch: ') + e(p.nn) + ' ' + rSterne(FM.rollenWert(p, k)) : '–'}${r.id && !t.elf.includes(r.id) ? ' <span class="minus">(gewählter Spieler nicht in der Startelf)</span>' : ''}</div></td>
+    <td style="width:46%"><select data-c="rolle" data-k="${k}" style="width:100%;min-width:0"><option value="">automatisch</option>${feld.concat(andere).map(q => `<option value="${q.id}" ${q.id === r.id ? 'selected' : ''}>${e(q.nn)} (${'★'.repeat(Math.max(1, Math.round(FM.rollenWert(q, k) * 5)))})</option>`).join('')}</select></td></tr>`; }).join('')}</table>
+    <p class="klein leise">Die Sterne zeigen, wie gut ein Spieler die Rolle ausfüllt. <b>Kapitän:</b> erfahrene Führungsspieler machen die ganze Mannschaft etwas stärker, solange sie auf dem Platz stehen. <b>Elfmeterschütze:</b> tritt bei Elfmetern an und schießt im Elfmeterschießen zuerst; Nervenstärke ist nicht dasselbe wie Stärke. <b>Standardschütze:</b> bringt Ecken und Freistöße gefährlich vor das Tor. Fällt ein Spieler aus, übernimmt automatisch der Beste auf dem Platz.</p></div>`;
+}
 function aufstellungHtml(t) {
-  FM.aufstellungPruefen(t);
+  FM.aufstellungPruefen(t); FM.taktikPruefen(t);
   const sl = FM.slots(t.form); const k = FM.kader(t);
   const reihen = { TW: [], AB: [], MF: [], ST: [] };
   sl.forEach((s, i) => { const p = FM.sp(t.elf[i]); reihen[s].push(`<div class="slot ${p && p.pos !== s ? 'falsch' : ''}"><b>${p ? e(p.nn) : '–'}</b>${p ? Math.round(p.st) + ' · ' + p.pos : ''}</div>`); });
@@ -2455,12 +2542,15 @@ function aufstellungHtml(t) {
   return `<div class="raster"><div class="karte"><div class="filter" style="grid-template-columns:1fr 1fr 1fr">
     <label class="feld">Formation<select data-c="form">${Object.keys(FM.FORMATIONEN).map(f => `<option ${f === t.form ? 'selected' : ''}>${f}</option>`).join('')}</select></label>
     <label class="feld">Ausrichtung<select data-c="ausr">${Object.entries(FM.AUSR).map(([k2, v]) => `<option value="${k2}" ${+k2 === t.taktik.ausr ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-    <label class="feld">Einsatz<select data-c="einsatz">${Object.entries(FM.EINSATZ).map(([k2, v]) => `<option value="${k2}" ${+k2 === t.taktik.einsatz ? 'selected' : ''}>${v}</option>`).join('')}</select></label></div>
+    <label class="feld">Einsatz<select data-c="einsatz">${Object.entries(FM.EINSATZ).map(([k2, v]) => `<option value="${k2}" ${+k2 === t.taktik.einsatz ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label class="feld">Pressing<select data-c="press">${Object.entries(FM.PRESSING).map(([k2, v]) => `<option value="${k2}" ${+k2 === t.taktik.press ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    <label class="feld">Spielweise<select data-c="weise">${Object.entries(FM.SPIELWEISE).map(([k2, v]) => `<option value="${k2}" ${+k2 === t.taktik.weise ? 'selected' : ''}>${v}</option>`).join('')}</select></label></div>
     <div class="feldplan">${['TW', 'AB', 'MF', 'ST'].map(r => `<div class="reihe">${reihen[r].join('')}</div>`).join('')}</div>
     <div class="zeile" style="margin-top:10px"><button class="knopf p" data-a="autoelf">Beste Elf automatisch</button></div>
-    <p class="klein leise">Gelb umrandet = Spieler auf fremder Position (schwächer). Offensiv bringt mehr Chancen, öffnet aber hinten. „Hart“ bringt etwas mehr Zweikampfstärke, aber mehr Karten und Müdigkeit.</p></div>
+    <p class="klein leise">Gelb umrandet = Spieler auf fremder Position (schwächer). Offensiv bringt mehr Chancen, öffnet aber hinten. „Hart“ bringt etwas mehr Zweikampfstärke, aber mehr Karten und Müdigkeit.</p>
+    <p class="klein leise"><b>Pressing:</b> Hohes Pressing verschlechtert die Chancen des Gegners und bringt mehr Ballbesitz, kostet aber viel Kraft – und ein Konterteam findet dahinter Platz. Tief stehen spart Kraft und macht das Spiel chancenärmer. <b>Spielweise:</b> Konter lohnt sich gegen offensive, stärkere oder ballbesitzorientierte Gegner, verpufft aber gegen einen Abwehrriegel. Ballbesitz lohnt sich, wenn dein Mittelfeld klar besser ist. Nach dem Spiel zeigt die Analyse, ob deine Taktik gegriffen hat.</p></div>
     <div class="karte"><h2>Startelf</h2>${sl.map((s, i) => `<div class="zwischen" style="margin-bottom:6px"><span class="pos ${s}">${s}</span><select style="flex:1;margin-left:8px" data-c="slot" data-i="${i}">${opt(t.elf[i], s)}</select></div>`).join('')}
-    <h3>Bank</h3><div class="klein">${t.bank.map(id => { const p = FM.sp(id); return `<span class="pos ${p.pos}">${p.pos}</span> ${e(p.nn)} (${Math.round(p.st)})`; }).join(' · ') || '–'}</div></div></div>`;
+    <h3>Bank</h3><div class="klein">${t.bank.map(id => { const p = FM.sp(id); return `<span class="pos ${p.pos}">${p.pos}</span> ${e(p.nn)} (${Math.round(p.st)})`; }).join(' · ') || '–'}</div></div>${rollenHtml(t)}</div>`;
 }
 
 // ---------- Jugend (U19) ----------
@@ -2572,7 +2662,7 @@ function spielSeite() {
   const H = FM.team(o.h), G = FM.team(o.g);
   FM.aufstellungPruefen(t);
   h += `<div class="anzeige"><div class="tn">${e(H.name)}<div class="klein" style="opacity:.75">Stärke ${Math.round(FM.teamStaerke(H))}${H.ausland ? ' · ' + e(FM.landName(H)) : s.woche > 1 ? ' · Platz ' + FM.platz(H.id) : ''}</div></div><div><div class="stand">–:–</div><div class="min">${spielName(o)}</div></div><div class="tn">${e(G.name)}<div class="klein" style="opacity:.75">Stärke ${Math.round(FM.teamStaerke(G))}${G.ausland ? ' · ' + e(FM.landName(G)) : s.woche > 1 ? ' · Platz ' + FM.platz(G.id) : ''}</div></div></div>
-  <div class="karte"><div class="zwischen"><div><b>Deine Elf (${e(t.form)}, ${FM.AUSR[t.taktik.ausr]})</b><div class="klein leise">${t.elf.map(id => e(FM.sp(id).nn)).join(', ')}</div></div><button class="knopf" data-nav="kader" data-sub="aufstellung">Ändern</button></div></div>
+  <div class="karte"><div class="zwischen"><div><b>Deine Elf (${e(t.form)}, ${FM.AUSR[t.taktik.ausr]}${t.taktik.press ? ', ' + FM.PRESSING[t.taktik.press] : ''}${t.taktik.weise ? ', ' + FM.SPIELWEISE[t.taktik.weise] : ''})</b><div class="klein leise">${t.elf.map(id => e(FM.sp(id).nn)).join(', ')}</div></div><button class="knopf" data-nav="kader" data-sub="aufstellung">Ändern</button></div></div>
   <div class="zeile"><button class="knopf p" data-a="live">▶ Live spielen</button><button class="knopf" data-a="sofort">Sofort berechnen</button></div>`;
   return h;
 }
@@ -2701,7 +2791,7 @@ function liveHtml() {
   ${halb ? `<div class="karte halbzeit"><h2>Halbzeit: deine Ansprache</h2><p class="klein leise">Stand ${M.tore[0]}:${M.tore[1]}. Was sagst du in der Kabine? Die Wirkung hängt vom Spielstand ab: Lob passt zur Führung, eine harte Ansage eher bei Rückstand. Ruhige Analyse hilft immer ein wenig.</p><div class="zeile">${Object.entries(FM.ANSPRACHE).map(([k, v]) => `<button class="knopf ${k === 'ruhig' ? '' : 'p'}" data-a="l-ansprache" data-k="${k}">${v}</button>`).join('')}</div></div>` : ''}
   <div class="karte"><div class="zeile">${M.fertig ? '' : `<button class="knopf ${LIVE.pause ? 'p' : ''}" data-a="l-pause" id="l-pk">${LIVE.pause ? '▶ Weiter' : '⏸ Pause'}</button>${[1, 2, 3].map(k => `<button class="knopf k ${S().tickerSpeed === k ? 'p' : ''}" data-a="l-tempo" data-k="${k}">${['', 'Normal', 'Schnell', 'Turbo'][k]}</button>`).join('')}<button class="knopf k" data-a="l-rest">Rest sofort</button>`}</div></div>
   <div class="raster"><div class="karte"><h2>Liveticker</h2><div class="ticker" id="l-ticker"></div></div>
-  <div><div class="karte"><h2>Taktik</h2><div class="filter" style="grid-template-columns:1fr 1fr"><label class="feld">Ausrichtung<select data-c="l-ausr" ${M.fertig ? 'disabled' : ''}>${Object.entries(FM.AUSR).map(([k, v]) => `<option value="${k}" ${+k === s.ausr ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label class="feld">Einsatz<select data-c="l-einsatz" ${M.fertig ? 'disabled' : ''}>${Object.entries(FM.EINSATZ).map(([k, v]) => `<option value="${k}" ${+k === s.einsatz ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label class="feld">System<select data-c="l-form" ${M.fertig ? 'disabled' : ''}>${Object.keys(FM.FORMATIONEN).map(k => `<option ${k === s.form ? 'selected' : ''}>${k}</option>`).join('')}</select></label></div>
+  <div><div class="karte"><h2>Taktik</h2><div class="filter" style="grid-template-columns:1fr 1fr"><label class="feld">Ausrichtung<select data-c="l-ausr" ${M.fertig ? 'disabled' : ''}>${Object.entries(FM.AUSR).map(([k, v]) => `<option value="${k}" ${+k === s.ausr ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label class="feld">Einsatz<select data-c="l-einsatz" ${M.fertig ? 'disabled' : ''}>${Object.entries(FM.EINSATZ).map(([k, v]) => `<option value="${k}" ${+k === s.einsatz ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label class="feld">Pressing<select data-c="l-press" ${M.fertig ? 'disabled' : ''}>${Object.entries(FM.PRESSING).map(([k, v]) => `<option value="${k}" ${+k === (s.press || 0) ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label class="feld">Spielweise<select data-c="l-weise" ${M.fertig ? 'disabled' : ''}>${Object.entries(FM.SPIELWEISE).map(([k, v]) => `<option value="${k}" ${+k === (s.weise || 0) ? 'selected' : ''}>${v}</option>`).join('')}</select></label><label class="feld">System<select data-c="l-form" ${M.fertig ? 'disabled' : ''}>${Object.keys(FM.FORMATIONEN).map(k => `<option ${k === s.form ? 'selected' : ''}>${k}</option>`).join('')}</select></label></div>
   <h3>Wechsel (<span id="l-wz">${s.wechsel}</span>/5)</h3><div class="filter" style="grid-template-columns:1fr 1fr"><label class="feld">Raus<select id="l-raus">${sel(s.elf)}</select></label><label class="feld">Rein<select id="l-rein">${sel(s.bank)}</select></label></div><button class="knopf" data-a="l-wechsel" ${M.fertig || s.wechsel >= 5 ? 'disabled' : ''}>Wechseln</button></div>
   <div class="karte"><h2>Deine Spieler</h2><div id="l-elf"></div><p class="klein leise">Fitness unter 70 kostet Leistung. ▮ = Gelbe Karte, Gelb-Rot droht.</p></div>
   <div class="karte"><h2>Statistik</h2><div id="l-stat"></div></div></div></div>`;
@@ -2713,7 +2803,7 @@ function elfLive(M) {
 function statHtml(M) {
   const z = (t, a, b, fmt) => { const s = a + b || 1; return `<div class="statz"><span class="zahl">${fmt ? fmt(a) : a}</span><div><div class="klein leise" style="text-align:center">${t}</div><div class="b2"><i style="width:${a / s * 100}%"></i><i style="width:${b / s * 100}%"></i></div></div><span>${fmt ? fmt(b) : b}</span></div>`; };
   const bs = M.stat.besitz[0] + M.stat.besitz[1] || 1;
-  return z('Ballbesitz', Math.round(M.stat.besitz[0] / bs * 100), Math.round(M.stat.besitz[1] / bs * 100), x => x + '%') + z('Torschüsse', M.stat.sch[0], M.stat.sch[1]) + z('aufs Tor', M.stat.aufs[0], M.stat.aufs[1]) + z('Ecken', M.stat.ecken[0], M.stat.ecken[1]) + z('Fouls', M.stat.fouls[0], M.stat.fouls[1]) + z('Karten', M.stat.karten[0], M.stat.karten[1]);
+  return z('Ballbesitz', Math.round(M.stat.besitz[0] / bs * 100), Math.round(M.stat.besitz[1] / bs * 100), x => x + '%') + (M.stat.xg ? z('Erwartete Tore (xG)', M.stat.xg[0], M.stat.xg[1], x => x.toFixed(1).replace('.', ',')) : '') + z('Torschüsse', M.stat.sch[0], M.stat.sch[1]) + z('aufs Tor', M.stat.aufs[0], M.stat.aufs[1]) + z('Ecken', M.stat.ecken[0], M.stat.ecken[1]) + z('Fouls', M.stat.fouls[0], M.stat.fouls[1]) + z('Karten', M.stat.karten[0], M.stat.karten[1]);
 }
 function evHtml(x) { return `<div class="ev ${x.typ}"><span class="m">${x.min}${x.min !== '' ? "'" : ''}</span><span class="x">${e(x.text)}</span></div>`; }
 function liveAktualisieren(voll) {
@@ -2759,6 +2849,7 @@ function ergebnisHtml() {
   return `<h1>${titel}</h1><div class="anzeige"><div class="tn">${e(H.kurz)}</div><div><div class="stand">${M.tore[0]}:${M.tore[1]}</div><div class="min">${EU ? e(FM.wettText(M.spiel)) + '<br>' : ''}${ag ? 'Gesamt ' + ag[0] + ':' + ag[1] + ' · ' : ''}${pk && pk.n ? pk.n + (pk.elf ? ' ' + pk.elf.join(':') : '') + ' · ' : ''}${z.toLocaleString('de-DE')} Zuschauer</div></div><div class="tn">${e(G.kurz)}</div></div>
   <div class="raster"><div class="karte"><h2>Höhepunkte</h2>${M.ev.filter(x => ['tor', 'rot', 'verl', 'pause', 'abpfiff', 'elf'].includes(x.typ) || (x.min === '' && x.s >= 0) || /Halbzeitansprache|Elfmeter für|stellt um auf/.test(x.text)).map(evHtml).join('')}</div>
   <div class="karte"><h2>Noten deiner Spieler</h2><table>${noten.map(([p, n]) => `<tr><td><span class="pos ${p.pos}">${p.pos}</span> ${pn(p)}</td><td class="zahl"><b>${n.toFixed(1)}</b></td></tr>`).join('')}</table><p class="klein leise">Schulnoten: 1 sehr gut bis 6 ungenügend.</p></div>
+  <div class="karte"><h2>Spielanalyse</h2>${FM.analyse(M, i).map(x => `<p class="klein" style="margin:0 0 6px">${e(x)}</p>`).join('')}</div>
   <div class="karte"><h2>Statistik</h2>${statHtml(M)}</div></div>
   <div class="zeile">${ERG.naechstes ? '<button class="knopf p" data-a="erg-weiter">Zum nächsten Spiel dieser Woche</button>' : ''}<button class="knopf ${ERG.naechstes ? '' : 'p'}" data-a="erg-ok">Weiter zum Büro</button><button class="knopf" data-a="erg-tabelle">Tabelle</button></div>`;
 }
@@ -2938,6 +3029,7 @@ function hilfeSeite() {
   <p><b>DFB-Pokal:</b> 64 Vereine, sechs Runden (Wochen ${FM.POKAL_WOCHEN.join(', ')}). Die tiefere Liga hat Heimrecht, Unentschieden gibt es nicht: Verlängerung und Elfmeterschießen. Jede Runde bringt Prämie und Zuschauereinnahmen. Pokalspiele zählen nicht für Liga-Statistik und Gelbsperren.</p>
   <p><b>Europapokal:</b> Champions League, Europa League und Conference League mit je 36 Vereinen, 2026/27 mit den echten Teilnehmern und der echten Auslosung. Ligaphase (8 bzw. 6 Spieltage), dann Playoffs, Achtelfinale, Viertelfinale, Halbfinale (Hin- und Rückspiel) und Finale an neutralem Ort. Deutsche Vereine qualifizieren sich über die Bundesliga (Platz 1–4 CL, 5 und Pokalsieger EL, 6 ECL). Startgeld und Prämien sind teils sehr hoch, siehe „Spiel“ → „Europapokal“.</p>
   <p><b>Leihen:</b> Im Transferfenster kannst du Ergänzungsspieler und Talente bis 21 Jahre anderer Vereine bis Saisonende ausleihen (Spieler antippen → „Bis Saisonende ausleihen“). Du zahlst eine Leihgebühr und das Gehalt. Eigene Spieler verleihst du über Kader → Spieler → „Verleihen“ in die eigene oder eine tiefere Liga. Der andere Verein zahlt dann das Gehalt, und Spielpraxis lässt Talente wachsen. Zum Saisonende kehren alle Leihspieler zurück (🔁). Beim Ausleihen geht auch eine Kaufoption (teurer, Kauf freiwillig) oder eine Kaufpflicht (billiger, Kauf zum Saisonende sicher).</p>
+  <p><b>Taktik & Rollen:</b> Unter Kader → Aufstellung stellst du neben Formation, Ausrichtung und Einsatz auch Pressing und Spielweise ein, im Spiel kannst du beides live ändern. Es gibt kein „immer richtig“: Konter schlägt offensive Ballbesitz-Teams, verpufft aber gegen Abwehrriegel; hohes Pressing nervt den Gegner, macht aber müde. Dazu bestimmst du Kapitän, Elfmeter- und Standardschützen (Sterne zeigen die Eignung). Nach jedem Spiel erklärt die Spielanalyse mit erwarteten Toren (xG), ob deine Taktik gegriffen hat. Neues Training: Standards.</p>
   <p><b>Jugend & Scouting:</b> Deine U19 findest du unter Kader → Jugend. Jedes Jahr kommen neue Talente (mehr und bessere mit besserem NLZ). Mit 19 musst du sie hochziehen, sonst gehen sie. Unter Transfers → Scouting gibst du deinem Scout einen Auftrag (Liga, Position, Alter). Gefundene Spieler landen auf der Beobachtungsliste. Je öfter beobachtet, desto enger die Talent-Spanne. Jeden Spieler kannst du im Spielerfenster mit „Beobachten“ auf die Liste setzen.</p>
   <p><b>Verhandeln:</b> Jeder Verein hat je Spieler und Transferfenster seine eigene Schmerzgrenze. Spieler in Form, Stammspieler im Winter und Wechsel zu einem Ligakonkurrenten machen es teurer, ein auslaufender Vertrag billiger. Du kannst in Raten zahlen, einen eigenen Spieler dazugeben (Tausch) oder dem Verein eine Weiterverkaufsbeteiligung anbieten. Nach zu vielen schwachen Angeboten brechen Verein oder Spieler die Gespräche ab. Im Vertrag gehen neben Gehalt und Handgeld auch Einsatz-, Tor- und Zielprämien.</p>
   <p><b>Stimmung & Presse:</b> Im Büro siehst du die Stimmung der Fans und der Mannschaft. Siege, vor allem überraschende, heben sie, Niederlagen drücken sie. Gute Fan-Stimmung bringt mehr Zuschauer, mehr Fanartikel und mehr Heimvorteil. Eine gute Mannschaftsstimmung macht dein Team im Spiel etwas stärker. Nach manchen Spielen stellt die Presse eine Frage. Deine Antwort wirkt auf Fans, Mannschaft und Vorstand. Wer nicht antwortet, verärgert den Vorstand ein wenig.</p>
@@ -3134,6 +3226,9 @@ function aendern(el) {
   if (c === 'form') { t.form = el.value; FM.autoAufstellung(t); }
   else if (c === 'ausr') t.taktik.ausr = +el.value;
   else if (c === 'einsatz') t.taktik.einsatz = +el.value;
+  else if (c === 'press') t.taktik.press = +el.value;
+  else if (c === 'weise') t.taktik.weise = +el.value;
+  else if (c === 'rolle') FM.rolleSetzen(el.dataset.k, el.value ? +el.value : null);
   else if (c === 'slot') { const i = +el.dataset.i, id = +el.value; if (!id) return render(); const j = t.elf.indexOf(id); if (j >= 0) t.elf[j] = t.elf[i]; else t.bank = t.bank.filter(x => x !== id); t.elf[i] = id; t.bank = t.bank.filter(x => !t.elf.includes(x)); }
   else if (c === 'liga') { A.liga = +el.value; A.runde = null; }
   else if (c === 'ticket') { t.ticket = +el.value; }
@@ -3145,6 +3240,8 @@ function aendern(el) {
   else if (c && c.startsWith('ed-')) { A.ed[c.slice(3)] = el.value; return render(); }
   else if (c === 'l-ausr' && LIVE) { LIVE.M.s[ich(LIVE.M)].ausr = +el.value; return; }
   else if (c === 'l-einsatz' && LIVE) { LIVE.M.s[ich(LIVE.M)].einsatz = +el.value; return; }
+  else if (c === 'l-press' && LIVE) { LIVE.M.s[ich(LIVE.M)].press = +el.value; return; }
+  else if (c === 'l-weise' && LIVE) { LIVE.M.s[ich(LIVE.M)].weise = +el.value; return; }
   else if (c === 'l-form' && LIVE) { FM.formationLive(LIVE.M, ich(LIVE.M), el.value); render(); return; }
   speichern(); render();
 }
