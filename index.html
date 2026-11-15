@@ -203,6 +203,7 @@ table.lr td{vertical-align:top}
 .rb-mehr{margin:10px 0}
 .rb-mehr summary{cursor:pointer;color:var(--gruen);font-weight:600;padding:6px 0}
 @media (max-width:420px){ .rb-kacheln b{font-size:16px} .diagramm text{font-size:18px} }
+.nebenpos{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:4px}.nebenpos label{font-size:13px;white-space:nowrap;display:flex;align-items:center;gap:3px}
 
 </style>
 <link rel="manifest" href="manifest.webmanifest">
@@ -217,7 +218,7 @@ const DATEN = {"stand":"2026-11-15","saison":"2026/27","quelle":"Vereine und Kad
 'use strict';
 /* Anpfiff & Bilanz – Spielkern (ohne Oberfläche, auch in Node testbar) */
 const FM = (function () {
-const VERSION = '2.4';
+const VERSION = '2.4.1';
 let S = null; // Spielstand
 
 // ---------- Zufall (mit Startwert, damit Tests wiederholbar sind) ----------
@@ -432,7 +433,7 @@ function bewertungVon(t, vn, nn) {
 // genaue Positionen eines echten Spielers aus daten/positionen (Schlüssel "Vorname Nachname|Geburtsdatum")
 function positionenVon(vn, nn, geb, pos) {
   const m = DATEN_REF && DATEN_REF.positionen; if (!m) return [];
-  const v = m[((vn || '') + ' ' + nn).trim() + '|' + (geb || '')]; if (!v) return [];
+  const nm = ((vn || '') + ' ' + nn).trim(); const v = m[nm + '|' + (geb || '')] || m[nm + '|']; if (!v) return [];
   const d = v.split('/').filter(x => DPOS.includes(x)); const g = POS.includes(pos) ? pos : null;
   if (!g) return d; const pass = d.filter(x => GRP[x] === g); return pass.length ? pass.concat(d.filter(x => GRP[x] !== g)) : [];
 }
@@ -2404,7 +2405,10 @@ function editorSpeichern(id, w) {
   let p = id != null ? sp(id) : null; const neu = !p;
   if (neu) p = neuerSpieler({ team: null, echt: false });
   const alt = p.team;
-  const wd = DPOS.includes(w.pos) ? w.pos : null; if (wd && dpos(p)[0] !== wd) p.dp = [wd].concat((p.dp || []).filter(x => x !== wd && GRP[x] === GRP[wd]));
+  const wd = DPOS.includes(w.pos) ? w.pos : null; const vorher = neu ? '' : dpos(p).join('/');
+  if (wd) { const nb = Array.isArray(w.neben) ? w.neben.filter(x => DPOS.includes(x) && x !== wd) : (p.dp || []).filter(x => x !== wd && GRP[x] === GRP[wd]); p.dp = [wd].concat([...new Set(nb)].slice(0, 3)); }
+  else if (POS.includes(w.pos) && p.pos !== w.pos) delete p.dp;
+  if (!neu && wd && p.dp.join('/') !== vorher) p.posEdit = true;
   Object.assign(p, { vn, nn, pos: wd ? GRP[wd] : w.pos, geb, nat: String(w.nat || '').trim().slice(0, 3).toUpperCase(), nr: Math.max(0, Math.min(99, parseInt(w.nr) || 0)), st, pot, edit: true });
   if (w.gehalt != null && w.gehalt !== '') { p.gehalt = Math.max(0, Math.round(+w.gehalt)); p.gehaltFest = true; }
   const bis = parseInt(w.vBis); if (bis) p.vEnde = Math.max(S.saison, bis - 1);
@@ -2447,6 +2451,25 @@ function positionenNachziehen() {
   Object.values(S.spieler).forEach(p => dpos(p));
   S.posFix24 = true;
 }
+// neue oder korrigierte Positionsdaten (z. B. nach gemeldeten Korrekturen) auch in laufende Spielstände übernehmen; eigene Änderungen im Editor bleiben
+function positionenAktualisieren() {
+  const m = DATEN_REF && DATEN_REF.positionen; if (!m) return 0;
+  const stand = hash(JSON.stringify(m)); if (S.posStand === stand) return 0;
+  let n = 0;
+  if (S.posStand != null || S.posFix24) Object.values(S.spieler).forEach(p => { if (!p.echt || p.posEdit) return; const d = positionenVon(p.vn, p.nn, p.geb, p.pos); if (d.length && d.join('/') !== (p.dp || []).join('/')) { p.dp = d; n++; } });
+  S.posStand = stand; return n;
+}
+// Positionen, die du im Editor geändert hast, als Liste zum Melden (Vorname Nachname|Geburtsdatum|Verein|Positionen)
+function positionsMeldungen() {
+  return Object.values(S.spieler).filter(p => p.posEdit).map(p => ({ id: p.id, name: ((p.vn || '') + ' ' + p.nn).trim(), geb: p.geb, verein: p.team != null && team(p.team) ? team(p.team).name : '', dp: dpos(p).join('/'), echt: !!p.echt }))
+    .sort((a, b) => a.verein.localeCompare(b.verein) || a.name.localeCompare(b.name));
+}
+function positionsMeldungText() {
+  const l = positionsMeldungen();
+  return ['# Anpfiff & Bilanz – Positionskorrekturen (Version ' + VERSION + ', Saison ' + S.saison + '/' + String(S.saison + 1).slice(2) + ')', '# Name|Geburtsdatum|Verein|Positionen (Hauptposition zuerst)']
+    .concat(l.map(x => [x.name, x.geb, x.verein, x.dp].join('|') + (x.echt ? '' : '|erfunden'))).join('\n') + '\n';
+}
+function positionsMeldungLeeren(id) { Object.values(S.spieler).forEach(p => { if (id == null || p.id === id) delete p.posEdit; }); }
 function migrieren() {
   kurzFix();
   while (S.ligen.length < LIGEN.length) S.ligen.push([]);
@@ -2454,7 +2477,7 @@ function migrieren() {
   if (!S.pokal) S.pokal = { saison: S.saison, runden: [], sieger: null }; // DFB-Pokal startet mit der nächsten Saison
   if (!S.verlaufFix) { Object.values(S.spieler).forEach(p => (p.verlauf || []).forEach(v => v[0]--)); S.verlaufFix = true; } // bis v1.5 stand der Verlauf eine Saison zu spät
   jugendInit(); scoutInit(); ligaRekordeInit(); erfolgeInit(); stadienKorrigieren(); if (S.mein != null) werbungAktualisieren(); if (S.mein != null && !S.manager.vereine.length) S.manager.vereine.push({ id: S.mein, von: S.saison });
-  bewertungNachziehen(); positionenNachziehen();
+  bewertungNachziehen(); positionenNachziehen(); positionenAktualisieren();
   S.v = VERSION;
 }
 // Spielstände aus der ersten Saison bekommen die neuen Stärken einmalig (nur Spieler, die noch beim Startverein sind)
@@ -2470,7 +2493,7 @@ function bewertungNachziehen() {
 function zustand() { return S; }
 function vereinWaehlen(id, schwierigkeit) { S.schwierigkeit = schwierigkeit || S.schwierigkeit || 'normal'; S.fanSt = 60; S.moral = 60; erfolgeInit(); S.manager.vereine.push({ id, von: S.saison }); S.mein = id; startFinanzen(); const t = meinTeam(); autoAufstellung(t); jugendInit(); scoutInit(); pokalNeu(); euroNeu(); post('Willkommen!', `Du bist neuer Manager von ${t.name}. Der Vorstand erwartet: ${S.ziel.text}. Kasse: ${geld(S.kasse)}. Wähle zuerst einen Hauptsponsor, dann kann die Saison beginnen. Weitere Werbeflächen (Banden, Trikotärmel, Stadionname …) vermietest du unter Finanzen → Sponsor & Investor.`); }
 
-return { editorSpeichern, editorLoeschen, importLaufend, alleTeams, leistungsFaktor, VERSION, LIGEN, WOCHEN, FENSTER_WINTER, FORMATIONEN, POS, POSNAME, dpVerteilen, positionenVon, DPOS, DPOSNAME, GRP, dpos, nah, elfZuordnen, bestFormation, AUSR, EINSATZ, ERTRAG, AUFWAND, CSV_KOPF,
+return { editorSpeichern, editorLoeschen, importLaufend, alleTeams, leistungsFaktor, VERSION, LIGEN, WOCHEN, FENSTER_WINTER, FORMATIONEN, POS, POSNAME, positionsMeldungen, positionsMeldungText, positionsMeldungLeeren, positionenAktualisieren, dpVerteilen, positionenVon, DPOS, DPOSNAME, GRP, dpos, nah, elfZuordnen, bestFormation, AUSR, EINSATZ, ERTRAG, AUFWAND, CSV_KOPF,
   neueWelt, vereinWaehlen, neuerVerein, zustand, laden, exportieren, team, sp, meinTeam, kader, alter, marktwert, wunschGehalt, geld, tabelle, platz, zone, torjaeger,
   slots, autoAufstellung, aufstellungPruefen, posFaktor, verfuegbar, teamStaerke, neuesSpiel, spielSchritt, spielSofort, spielAbschliessen, wechsel, minText, linien,
   weiter, wocheAbschliessen, meinSpiel, naechstesMeinSpiel, spieleDerWoche, fensterOffen, rundenAnzahl,
@@ -3274,24 +3297,27 @@ function editorSeite() {
   const s = S(); const f = A.ed; if (f.team == null) f.team = s.mein;
   let h = `<h1>Spielerdatenbank</h1><p class="klein leise">Hier kannst du jeden Spieler ändern, neue anlegen, löschen oder zwischen Vereinen verschieben, auch im laufenden Spiel. Geänderte Spieler sind mit ✎ markiert. Marktwert und Gehaltswunsch rechnet das Spiel aus Stärke, Talent und Alter.</p>`;
   if (LIVE) return h + '<div class="hinweis">Während eines Livespiels ist die Datenbank gesperrt. Erst das Spiel beenden.</div>';
-  h += `<div class="zeile" style="margin-bottom:10px"><button class="knopf p" data-a="ed-neu">＋ Neuer Spieler</button><button class="knopf" data-a="csvaktuell">Als Tabelle exportieren (CSV)</button><button class="knopf" data-a="ed-csv">Tabelle ins laufende Spiel einlesen</button></div>
-  <div class="filter"><input type="text" placeholder="Name suchen" data-c="ed-text" value="${e(f.text)}"><select data-c="ed-team">${teamOptionen(f.team, true)}</select><select data-c="ed-pos"><option value="">Alle Positionen</option>${FM.POS.map(p => `<option value="${p}" ${f.pos === p ? 'selected' : ''}>${FM.POSNAME[p]}</option>`).join('')}</select></div>`;
+  h += `<div class="zeile" style="margin-bottom:10px"><button class="knopf p" data-a="ed-neu">＋ Neuer Spieler</button><button class="knopf" data-a="csvaktuell">Als Tabelle exportieren (CSV)</button><button class="knopf" data-a="ed-csv">Tabelle ins laufende Spiel einlesen</button><button class="knopf" data-a="pos-melden">Positionen melden (${FM.positionsMeldungen().length})</button></div>
+  <div class="filter"><input type="text" placeholder="Name suchen" data-c="ed-text" value="${e(f.text)}"><select data-c="ed-team">${teamOptionen(f.team, true)}</select><select data-c="ed-pos"><option value="">Alle Positionen</option>${FM.POS.map(p => `<option value="${p}" ${f.pos === p ? 'selected' : ''}>${FM.POSNAME[p]}</option>`).join('')}${FM.DPOS.filter(x => x !== 'TW').map(x => `<option value="${x}" ${f.pos === x ? 'selected' : ''}>– ${FM.DPOSNAME[x]}</option>`).join('')}<option value="✎" ${f.pos === '✎' ? 'selected' : ''}>✎ Position geändert</option></select></div>`;
   const q = f.text.trim().toLowerCase();
-  let l = Object.values(s.spieler).filter(p => (f.team === '*' ? true : f.team === '' ? p.team == null : p.team === f.team) && (!f.pos || p.pos === f.pos) && (!q || ((p.vn || '') + ' ' + p.nn).toLowerCase().includes(q)));
+  let l = Object.values(s.spieler).filter(p => (f.team === '*' ? true : f.team === '' ? p.team == null : p.team === f.team) && (!f.pos || p.pos === f.pos || (f.pos === '✎' ? p.posEdit : FM.dpos(p)[0] === f.pos)) && (!q || ((p.vn || '') + ' ' + p.nn).toLowerCase().includes(q)));
   const gesamt = l.length; l = l.sort((a, b) => FM.POS.indexOf(a.pos) - FM.POS.indexOf(b.pos) || b.st - a.st).slice(0, 150);
   h += `<div class="karte tabwrap"><table><tr><th>Pos</th><th>Name</th><th class="nur-gross">Verein</th><th class="zahl">Alter</th><th class="zahl">Stärke</th><th class="zahl">Talent</th><th class="zahl nur-gross">Gehalt</th><th class="zahl nur-gross">Vertrag</th></tr>
-  ${l.map(p => `<tr class="klick" data-a="ed-oeffnen" data-id="${p.id}"><td>${pb(p)}</td><td>${pn(p)}${p.edit ? ' <span class="leise" title="im Editor geändert">✎</span>' : ''}${p.echt ? '' : ' <span class="leise klein" title="erfundener Spieler">(erf.)</span>'}</td><td class="nur-gross">${p.team != null ? e(FM.team(p.team).kurz) : '–'}</td><td class="zahl">${FM.alter(p)}</td><td class="zahl"><span class="st">${Math.round(p.st)}</span></td><td class="zahl">${Math.round(p.pot)}</td><td class="zahl nur-gross">${g(p.gehalt)}</td><td class="zahl nur-gross">${p.vEnde + 1}</td></tr>`).join('') || '<tr><td colspan="8" class="leer">Keine Spieler gefunden.</td></tr>'}</table></div>
+  ${l.map(p => `<tr class="klick" data-a="ed-oeffnen" data-id="${p.id}"><td>${pb(p)}</td><td>${pn(p)}${p.edit ? ' <span class="leise" title="im Editor geändert">✎</span>' : ''}${p.posEdit ? ' <span class="klein" title="Position geändert, wird gemeldet">📍</span>' : ''}${p.echt ? '' : ' <span class="leise klein" title="erfundener Spieler">(erf.)</span>'}</td><td class="nur-gross">${p.team != null ? e(FM.team(p.team).kurz) : '–'}</td><td class="zahl">${FM.alter(p)}</td><td class="zahl"><span class="st">${Math.round(p.st)}</span></td><td class="zahl">${Math.round(p.pot)}</td><td class="zahl nur-gross">${g(p.gehalt)}</td><td class="zahl nur-gross">${p.vEnde + 1}</td></tr>`).join('') || '<tr><td colspan="8" class="leer">Keine Spieler gefunden.</td></tr>'}</table></div>
   <p class="klein leise">${gesamt > 150 ? `150 von ${gesamt} Treffern. Filter verfeinern.` : gesamt + ' Spieler.'}</p>`;
   return h;
 }
 function editorDialog(id) {
   const p = id != null ? FM.sp(id) : null; const s = S();
   const v = p || { vn: '', nn: '', pos: 'MF', geb: (s.saison - 22) + '-01-01', nat: 'DEU', nr: 0, st: Math.round(FM.LIGEN[FM.meinTeam().liga].basis), pot: Math.round(FM.LIGEN[FM.meinTeam().liga].basis + 6), gehalt: FM.LIGEN[FM.meinTeam().liga].minGehalt, vEnde: s.saison + 2, klausel: 0, team: A.ed.team && A.ed.team !== '*' ? A.ed.team : s.mein };
+  const dpv = p ? FM.dpos(p) : ['ZM']; const dp0 = dpv[0];
   const fld = (lab, id2, typ, wert, extra) => `<label class="feld">${lab}<input type="${typ}" id="${id2}" value="${e(wert)}" ${extra || ''}></label>`;
   dialog(`<div class="zwischen"><h2>${p ? 'Spieler bearbeiten' : 'Neuer Spieler'}</h2><button class="knopf k" data-a="zu">✕</button></div>
   ${p ? `<div class="klein leise">${p.echt ? 'Echter Spieler (Kader laut Wikipedia)' : 'Erfundener Spieler'}${p.edit ? ', im Editor geändert' : ''}. Marktwert jetzt ${g(FM.marktwert(p))}.</div>` : ''}
   <div class="filter" style="grid-template-columns:1fr 1fr">${fld('Vorname', 'e-vn', 'text', v.vn)}${fld('Nachname', 'e-nn', 'text', v.nn)}</div>
-  <div class="filter" style="grid-template-columns:1fr 1fr 1fr"><label class="feld">Position<select id="e-pos">${FM.POS.map(x => `<option value="${x}" ${x === v.pos ? 'selected' : ''}>${FM.POSNAME[x]}</option>`).join('')}</select></label>${fld('Geburtsdatum', 'e-geb', 'date', v.geb)}${fld('Nationalität (3 Buchst.)', 'e-nat', 'text', v.nat, 'maxlength="3"')}</div>
+  <div class="filter" style="grid-template-columns:1fr 1fr 1fr"><label class="feld">Hauptposition<select id="e-pos">${FM.POS.map(gr => `<optgroup label="${FM.POSNAME[gr]}">${FM.DPOS.filter(x => FM.GRP[x] === gr).map(x => `<option value="${x}" ${x === dp0 ? 'selected' : ''}>${x} – ${FM.DPOSNAME[x]}</option>`).join('')}</optgroup>`).join('')}</select></label>${fld('Geburtsdatum', 'e-geb', 'date', v.geb)}${fld('Nationalität (3 Buchst.)', 'e-nat', 'text', v.nat, 'maxlength="3"')}</div>
+  <div class="feld">Nebenpositionen (kann er auch spielen, höchstens drei)<div class="nebenpos">${FM.DPOS.map(x => `<label title="${e(FM.DPOSNAME[x])}"><input type="checkbox" class="e-neben" value="${x}" ${dpv.slice(1).includes(x) ? 'checked' : ''}> ${x}</label>`).join('')}</div></div>
+  ${p && p.posEdit ? '<p class="klein">✎ Position geändert, steht in der Liste „Positionen melden“.</p>' : ''}
   <div class="filter" style="grid-template-columns:1fr 1fr 1fr">${fld('Rückennummer', 'e-nr', 'number', v.nr || '', 'min="0" max="99"')}${fld('Stärke (20–99)', 'e-st', 'number', Math.round(v.st), 'min="20" max="99"')}${fld('Talent/Potential (20–99)', 'e-pot', 'number', Math.round(v.pot), 'min="20" max="99"')}</div>
   <div class="filter" style="grid-template-columns:1fr 1fr 1fr">${fld('Gehalt/Jahr in €', 'e-geh', 'number', Math.round(v.gehalt), 'min="0" step="1000"')}${fld('Vertrag bis (30.6.)', 'e-bis', 'number', v.vEnde + 1, `min="${s.saison + 1}" max="${s.saison + 8}"`)}${fld('Ausstiegsklausel in € (0 = keine)', 'e-kl', 'number', v.klausel || 0, 'min="0" step="100000"')}</div>
   <label class="feld">Verein<select id="e-team">${teamOptionen(v.team == null ? '' : v.team, false)}</select></label>
@@ -3359,6 +3385,16 @@ const AKT = {
   platzwegja: d => { const n = +d.n; schliessen(); dbLoeschen(schl(n)); lsWeg(schl(n)); delete META.plaetze[n]; metaSchreiben(); if (n === PLATZ) GESP = null; NEU_PLATZ = null; startseite(); },
   vereinstart: d => { schliessen(); PLATZ = NEU_PLATZ || PLATZ; FM.vereinWaehlen(d.id, NEU_GRAD); speichern(); NEU_PLATZ = null; document.body.innerHTML = ''; A.v = 'buero'; render(); },
   csvvorlage: () => datei('Anpfiff-und-Bilanz-Kader.csv', FM.csvExport(), 'text/csv;charset=utf-8'),
+  'pos-melden': () => { const l = FM.positionsMeldungen();
+    dialog(`<div class="zwischen"><h2>Positionen melden</h2><button class="knopf k" data-a="zu">✕</button></div>
+    <p class="klein">Hier stehen alle Spieler, deren Position du im Editor geändert hast. Sichere die Liste als Datei und gib sie Claude (zum Beispiel in den Ordner <b>00_Inbox</b> legen und Bescheid sagen). Dann werden die Positionen in den Spieldaten korrigiert und gelten mit der nächsten Version für alle Spielstände. Das Spiel selbst sendet nichts.</p>
+    ${l.length ? `<div class="tabwrap" style="max-height:45vh;overflow:auto"><table><tr><th>Name</th><th>Verein</th><th>Position</th><th></th></tr>${l.map(x => `<tr><td>${e(x.name)}${x.echt ? '' : ' <span class="leise klein">(erf.)</span>'}</td><td class="klein">${e(x.verein || '–')}</td><td><b>${x.dp}</b></td><td class="zahl"><button class="knopf k" data-a="pos-melden-weg" data-id="${x.id}" title="aus der Liste nehmen">✕</button></td></tr>`).join('')}</table></div>
+    <div class="zeile" style="margin-top:10px"><button class="knopf p" data-a="pos-melden-datei">Als Datei sichern</button><button class="knopf" data-a="pos-melden-kopie">Text kopieren</button><button class="knopf r" data-a="pos-melden-leeren">Liste leeren</button></div>
+    <p class="klein leise">„Liste leeren“ ändert keine Positionen, es nimmt die Spieler nur aus der Meldeliste (z. B. nachdem Claude sie übernommen hat).</p>` : '<p class="leise">Noch keine geänderten Positionen. Öffne einen Spieler im Editor und wähle Haupt- und Nebenpositionen.</p>'}`); },
+  'pos-melden-datei': () => { datei('Anpfiff-Positionskorrekturen-' + new Date().toISOString().slice(0, 10) + '.txt', FM.positionsMeldungText(), 'text/plain;charset=utf-8'); toast('Datei gesichert.'); },
+  'pos-melden-kopie': () => { const t = FM.positionsMeldungText(); (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast('Text kopiert.'), () => toast('Kopieren ging nicht, bitte „Als Datei sichern“ nehmen.')); },
+  'pos-melden-weg': d => { FM.positionsMeldungLeeren(+d.id); speichern(); AKT['pos-melden'](); render(); },
+  'pos-melden-leeren': () => { FM.positionsMeldungLeeren(); speichern(); schliessen(); render(); toast('Meldeliste geleert.'); },
   csvaktuell: () => datei('Anpfiff-und-Bilanz-Kader-aktuell.csv', FM.csvExport(), 'text/csv;charset=utf-8'),
   csvimport: () => dateiWaehlen('.csv,text/csv,text/plain', txt => { FM.neueWelt(DATEN, { seed: Date.now() }); const r = FM.importAnwenden(txt); IMPORT_INFO = r.ok ? `Eingelesen: ${r.spieler} Spieler für ${r.vereine} Vereine.${r.unbekannt.length ? ' Nicht erkannte Vereinsnamen: ' + e(r.unbekannt.slice(0, 8).join(', ')) + (r.unbekannt.length > 8 ? ' …' : '') : ''} Jetzt einen Verein wählen.` : 'Fehler: ' + e(r.fehler); WELT_NEU = true; startseite(); }),
   dateiladen: () => dateiWaehlen('.json,application/json', txt => { try { FM.laden(txt); if (document.getElementById('start')) PLATZ = NEU_PLATZ || PLATZ; speichern(); document.body.innerHTML = ''; A.v = 'buero'; render(); toast('Spielstand geladen.'); } catch (er) { toast('Das ist keine gültige Spielstand-Datei.'); } }),
@@ -3447,7 +3483,7 @@ const AKT = {
   'ed-oeffnen': d => { if (LIVE) return toast('Während eines Livespiels ist die Datenbank gesperrt.'); editorDialog(+d.id); },
   'ed-neu': () => editorDialog(null),
   'ed-speichern': d => {
-    const w = { vn: $('#e-vn').value, nn: $('#e-nn').value, pos: $('#e-pos').value, geb: $('#e-geb').value, nat: $('#e-nat').value, nr: $('#e-nr').value, st: $('#e-st').value, pot: $('#e-pot').value, gehalt: $('#e-geh').value, vBis: $('#e-bis').value, klausel: $('#e-kl').value, team: $('#e-team').value };
+    const w = { vn: $('#e-vn').value, nn: $('#e-nn').value, pos: $('#e-pos').value, neben: [...document.querySelectorAll('.e-neben:checked')].map(x => x.value), geb: $('#e-geb').value, nat: $('#e-nat').value, nr: $('#e-nr').value, st: $('#e-st').value, pot: $('#e-pot').value, gehalt: $('#e-geh').value, vBis: $('#e-bis').value, klausel: $('#e-kl').value, team: $('#e-team').value };
     const r = FM.editorSpeichern(d.id === '' ? null : +d.id, w);
     if (!r.ok) return antwort(r.text, false);
     speichern(); schliessen(); render(); toast(r.text);
