@@ -204,7 +204,7 @@ const DATEN = {"stand":"2026-11-15","saison":"2026/27","quelle":"Vereine und Kad
 'use strict';
 /* Anpfiff & Bilanz – Spielkern (ohne Oberfläche, auch in Node testbar) */
 const FM = (function () {
-const VERSION = '1.7';
+const VERSION = '1.8';
 let S = null; // Spielstand
 
 // ---------- Zufall (mit Startwert, damit Tests wiederholbar sind) ----------
@@ -1448,7 +1448,7 @@ function kaufUebernehmen(p, von, betrag, raten, gehalt, jahre, handgeld, klausel
   p.karriere.push([S.saison, von ? von.name : 'vereinslos', gesamt]); erfolgTransfer('kauf', p, gesamt, von ? von.name : 'vereinslos');
   delete p.leihe;
   p.team = t.id; p.gehalt = gehalt; p.vEnde = S.saison + jahre - 1; p.klausel = klausel || 0; p.buch = gesamt; p.abschr = gesamt / Math.max(1, jahre); p.liste = false; if (!t.kader.includes(pid)) { t.kader.push(pid); p.nr = 0; }
-  p.boni = boniSauber(x.boni); p.wvb = von && x.wvb ? { an: von.id, pct: +x.wvb, basis: gesamt } : null;
+  p.wvbFuer = null; p.boni = boniSauber(x.boni); p.wvb = von && x.wvb ? { an: von.id, pct: +x.wvb, basis: gesamt } : null;
   if (von && !x.leihKauf) kiErsatz(von);
   const teile = [`Ablöse ${geld(betrag)}${raten > 1 ? ' in ' + raten + ' Raten' : ''}`];
   if (tq) teile.push(`dazu wechselt ${tq.vn} ${tq.nn} zu ${von.name} (angerechnet ${geld(tw)})`);
@@ -1468,18 +1468,20 @@ function kiErsatz(t) { // Computer-Verein füllt Lücken
   const soll = { TW: 2, AB: 6, MF: 6, ST: 3 };
   POS.forEach(pos => { while (ist[pos] < soll[pos]) { const f = S.frei.map(sp).filter(p => p && p.pos === pos && p.st <= t.staerke + 3).sort((a, b) => b.st - a.st)[0]; if (f) { S.frei = S.frei.filter(x => x !== f.id); f.team = t.id; t.kader.push(f.id); f.vEnde = S.saison + 1; } else erfinde(t, pos, t.staerke - 3, 20, 30); ist[pos]++; } });
 }
-function verkaufen(pid, kaeuferId, betrag) {
+function verkaufen(pid, kaeuferId, betrag, bed) {
+  bed = bed || {};
   const p = sp(pid); const t = meinTeam(); const k = team(kaeuferId);
   if (!t.kader.includes(pid)) return 'Spieler nicht mehr im Kader.';
   if (istLeihe(p)) return 'Leihspieler können nicht verkauft werden.';
   t.kader = t.kader.filter(x => x !== pid); t.elf = t.elf.filter(x => x !== pid); t.bank = t.bank.filter(x => x !== pid);
-  kassenbewegung(betrag, `Verkauf ${p.vn} ${p.nn} an ${k.name}`);
+  if (bed.raten === 2) { const h = Math.round(betrag / 2); kassenbewegung(betrag - h, `Verkauf ${p.vn} ${p.nn} an ${k.name} (1. Rate)`); S.forderungen = S.forderungen || []; S.forderungen.push({ s: S.saison + 1, w: 1, betrag: h, text: `${p.nn} (2. Rate von ${k.name})` }); }
+  else kassenbewegung(betrag, `Verkauf ${p.vn} ${p.nn} an ${k.name}`);
   const anteil = wvbFaellig(p, betrag, k); const gewinn = betrag - anteil - (p.buch || 0);
   if (gewinn >= 0) buchen('transfer', gewinn, null, false); else buchen('transferverlust', gewinn, null, false);
   p.karriere.push([S.saison, t.name + ' → ' + k.name, betrag]); erfolgTransfer('verkauf', p, betrag, k.name);
-  p.team = k.id; p.buch = 0; p.abschr = 0; p.liste = false; p.boni = null; p.wvb = null; p.gehalt = Math.max(p.gehalt, wunschGehalt(p, k)); p.vEnde = S.saison + ri(2, 4);
+  p.team = k.id; p.buch = 0; p.abschr = 0; p.liste = false; p.boni = null; p.wvb = null; p.wvbFuer = bed.wvb ? { an: S.mein, pct: bed.wvb, basis: betrag } : null; p.gehalt = Math.max(p.gehalt, wunschGehalt(p, k)); p.vEnde = S.saison + ri(2, 4);
   k.kader.push(pid); kaderTrimmen(k);
-  post('Spieler verkauft', `${p.vn} ${p.nn} wechselt für ${geld(betrag)} zu ${k.name}.${anteil ? ' Davon gehen ' + geld(anteil) + ' als Weiterverkaufsbeteiligung an den früheren Verein.' : ''} Buchgewinn: ${geld(gewinn)}.`);
+  post('Spieler verkauft', `${p.vn} ${p.nn} wechselt für ${geld(betrag)} zu ${k.name}.${anteil ? ' Davon gehen ' + geld(anteil) + ' als Weiterverkaufsbeteiligung an den früheren Verein.' : ''} ${bed.raten === 2 ? ' Die Hälfte kommt zu Beginn der nächsten Saison.' : ''}${bed.wvb ? ` Bei einem Weiterverkauf bekommst du ${bed.wvb} % vom Mehrerlös.` : ''} Buchgewinn: ${geld(gewinn)}.`);
   return null;
 }
 function kaderTrimmen(t) { while (t.kader.length > 30) { const w = kader(t).filter(p => !istLeihe(p)).sort((a, b) => a.st - b.st)[0]; if (!w) break; t.kader = t.kader.filter(x => x !== w.id); w.team = null; S.frei.push(w.id); } }
@@ -1520,14 +1522,31 @@ function angeboteFuerMeineSpieler() {
     const kandidaten = Object.values(S.teams).filter(k => k.id !== t.id && k.staerke >= p.st - 6 && k.staerke <= p.st + 10 && !k.pool && tst(k) <= tst(t) + 1);
     if (!kandidaten.length) return;
     const k = pick(kandidaten); const betrag = Math.round(marktwert(p) * (0.75 + rnd() * 0.55) * (p.liste ? 0.9 : 1.15) / 25e3) * 25e3;
-    if (S.post.some(m => m.aktion && m.aktion.typ === 'angebot' && m.aktion.pid === p.id && !m.erledigt)) return;
+    const offen = S.post.find(m => m.aktion && m.aktion.typ === 'angebot' && m.aktion.pid === p.id && !m.erledigt);
+    if (offen) { // ein zweiter Verein überbietet
+      const a = offen.aktion; if (k.id === a.k || rnd() > 0.45) return;
+      a.betrag = Math.max(r25(a.betrag * (1.05 + rnd() * 0.15)), betrag); a.k = k.id; a.bis = S.woche + 1; a.n = (a.n || 1) + 1; offen.neu = true;
+      offen.text += ` – Überboten: ${k.name} (${LIGEN[k.liga].name}) bietet jetzt ${geld(a.betrag)}.`; return;
+    }
     post(`Angebot für ${p.nn}`, `${k.name} (${LIGEN[k.liga].name}) bietet ${geld(betrag)} für ${p.vn} ${p.nn}. Marktwert laut Spiel: ${geld(marktwert(p))}.`, 'frage', { typ: 'angebot', pid: p.id, k: k.id, betrag, bis: S.woche + 1 });
   });
 }
-function nachverhandeln(m) { // +20 %
+function nachverhandeln(m) { // +20 %, mit mehreren Interessenten klappt es öfter
   const a = m.aktion; const neu = Math.round(a.betrag * 1.2 / 25e3) * 25e3;
-  if (rnd() < 0.45) { a.betrag = neu; return { ok: true, text: `${team(a.k).name} geht auf ${geld(neu)}.` }; }
+  if (rnd() < 0.45 + 0.15 * ((a.n || 1) - 1)) { a.betrag = neu; return { ok: true, text: `${team(a.k).name} geht auf ${geld(neu)}.` }; }
   m.erledigt = true; return { ok: false, text: `${team(a.k).name} zieht das Angebot zurück.` };
+}
+
+// Verkauf mit Bedingungen: Ratenzahlung (+8 %) oder Weiterverkaufsbeteiligung 20 % (−8 % Ablöse)
+function angebotBedingung(m, art) {
+  const a = m.aktion; if (a.bedNein) return { ok: false, text: 'Darüber spricht der Verein nicht mehr.' };
+  const k = team(a.k);
+  if (rnd() < (art === 'raten' ? 0.7 : 0.6)) {
+    const betrag = r25(a.betrag * (art === 'raten' ? 1.08 : 0.92)); m.erledigt = true; m.neu = false;
+    const f = verkaufen(a.pid, a.k, betrag, art === 'raten' ? { raten: 2 } : { wvb: 20 });
+    return f ? { ok: false, text: f } : { ok: true, text: `${k.name} ist einverstanden: ${geld(betrag)}${art === 'raten' ? ' in zwei Raten' : ' plus 20 % vom Mehrerlös bei einem Weiterverkauf'}.` };
+  }
+  a.bedNein = true; return { ok: false, text: `${k.name} will das nicht. Das Angebot über ${geld(a.betrag)} steht aber noch.` };
 }
 
 // ---------- Woche ----------
@@ -1820,7 +1839,7 @@ function neueSaisonVorbereiten(bericht) {
     if (t.id === S.mein) post('Neue Talente aus dem Nachwuchs', neu.map(p => `${p.vn} ${p.nn} (${POSNAME[p.pos]}, Stärke ${Math.round(p.st)}, Talent bis ca. ${Math.round(p.pot)})`).join(', ') + '.');
   });
   // Computer-Transfers: gute Spieler kleiner Vereine wechseln nach oben
-  kiTransfers();
+  const kiKauf = kiTransfers(); const kiLeih = kiLeihen(); transferTicker(kiKauf, kiLeih, S.leihKaeufe || []); S.leihKaeufe = [];
   Object.values(S.teams).forEach(t => { if (t.pool) return; if (t.id !== S.mein) { kaderTrimmen(t); kiErsatz(t); t.form = bestFormation(t); } t.abzug = 0; const st = teamStaerke(t); t.staerke = t.staerke * 0.5 + st * 0.5; });
   if (talentBericht.length) post('Entwicklungsbericht', 'Diese jungen Spieler haben ihr Talent durch die Saison deutlich verändert: ' + talentBericht.join('; ') + '. Spielpraxis und gute Noten lassen Talente wachsen, Tribüne lässt sie verkümmern.');
   // Eigener Kader zu klein: Amateure aus der Region rücken nach
@@ -1855,16 +1874,52 @@ function ligenErgaenzen() {
   Object.values(S.teams).forEach(t => { if (!t.pool && t.kader.length && !t.gehaltOk) { t.gehaltOk = true; } });
   return true;
 }
+// Weiterverkaufsbeteiligung zu meinen Gunsten: ein früherer Spieler von mir wechselt zwischen zwei anderen Vereinen
+function wvbFuerMich(p, ablöse, kaeufer) {
+  const w = p.wvbFuer; if (!w || w.an !== S.mein || !kaeufer || kaeufer.id === S.mein) return 0; p.wvbFuer = null;
+  const anteil = Math.round(w.pct / 100 * Math.max(0, ablöse - w.basis) / 1e3) * 1e3;
+  if (anteil > 0) { buchen('transfer', anteil, `Weiterverkaufsbeteiligung ${p.nn}`); post('Weiterverkaufsbeteiligung', `${p.vn} ${p.nn} wechselt für ${geld(ablöse)} zu ${kaeufer.name}. Dank deiner Beteiligung von ${w.pct} % bekommst du ${geld(anteil)}.`); }
+  return anteil;
+}
 function kiTransfers() {
   const kandidaten = Object.values(S.spieler).filter(p => p.team != null && p.team !== S.mein && alter(p) <= 29 && !team(p.team).ausland);
-  let n = 0;
+  let n = 0; const liste = [];
   kandidaten.sort((a, b) => b.st - a.st).forEach(p => {
     if (n > 60) return; const von = team(p.team);
     if (istLeihe(p) || p.st < von.staerke + 4 || rnd() > 0.35) return;
     const ziele = Object.values(S.teams).filter(t => t.id !== S.mein && !t.pool && tst(t) < tst(von) && Math.abs(t.staerke - p.st) < 4);
     if (!ziele.length) return; const z = pick(ziele);
-    von.kader = von.kader.filter(x => x !== p.id); z.kader.push(p.id); p.karriere.push([S.saison, von.name + ' → ' + z.name, marktwert(p)]); p.team = z.id; p.vEnde = S.saison + ri(2, 4); p.gehalt = Math.max(p.gehalt, wunschGehalt(p, z)); n++;
+    const abl = marktwert(p);
+    von.kader = von.kader.filter(x => x !== p.id); von.elf = von.elf.filter(x => x !== p.id); von.bank = von.bank.filter(x => x !== p.id); z.kader.push(p.id); p.karriere.push([S.saison, von.name + ' → ' + z.name, abl]); p.team = z.id; p.vEnde = S.saison + ri(2, 4); p.gehalt = Math.max(p.gehalt, wunschGehalt(p, z)); n++;
+    wvbFuerMich(p, abl, z); liste.push({ p, von, z, abl });
   });
+  return liste;
+}
+// Computer-Vereine verleihen Talente an kleinere Vereine, manchmal mit Kaufoption oder Kaufpflicht
+function kiLeihen() {
+  const liste = [];
+  Object.values(S.teams).filter(t => t.id !== S.mein && !t.pool && !t.ausland && S.ligen[t.liga] && S.ligen[t.liga].includes(t.id) && tst(t) <= 2).forEach(t => {
+    const rang = kader(t).sort((a, b) => b.st - a.st);
+    rang.filter((p, i) => i >= 14 && !istLeihe(p) && alter(p) <= 21 && p.pot >= p.st + 5).slice(0, 2).forEach(p => {
+      if (rnd() > 0.5) return;
+      const ziele = Object.values(S.teams).filter(z => z.id !== S.mein && z.id !== t.id && !z.pool && !z.ausland && S.ligen[z.liga] && S.ligen[z.liga].includes(z.id) && tst(z) > tst(t) && tst(z) <= tst(t) + 2 && z.staerke <= p.st + 3 && z.staerke >= p.st - 8);
+      if (!ziele.length) return; const z = pick(ziele);
+      const w = rnd(); const art = w < 0.25 ? 'option' : w < 0.35 ? 'pflicht' : null;
+      t.kader = t.kader.filter(x => x !== p.id); t.elf = t.elf.filter(x => x !== p.id); t.bank = t.bank.filter(x => x !== p.id);
+      p.leihe = { von: t.id, bis: S.saison, gebuehr: leihGebuehr(p), kauf: art ? { art, preis: r25(marktwert(p) * 1.1), gehalt: p.gehalt } : null };
+      p.team = z.id; z.kader.push(p.id); p.liste = false; p.karriere.push([S.saison, t.name + ' → ' + z.name + ' (Leihe' + (art === 'option' ? ' mit Kaufoption' : art === 'pflicht' ? ' mit Kaufpflicht' : '') + ')', 0]);
+      liste.push({ p, von: t, z, art });
+    });
+  });
+  return liste;
+}
+// Zusammenfassung des Transfersommers in der Post
+function transferTicker(kauf, leih, kaufLeihe) {
+  const top = kauf.slice().sort((a, b) => b.abl - a.abl).slice(0, 6);
+  if (!top.length && !leih.length) return;
+  const zl = top.map(x => `${x.p.vn} ${x.p.nn} (${x.von.kurz} → ${x.z.kurz}, ${geld(x.abl)})`);
+  const lt = leih.slice(0, 5).map(x => `${x.p.nn} (${x.von.kurz} → ${x.z.kurz}${x.art ? ', ' + (x.art === 'option' ? 'Kaufoption' : 'Kaufpflicht') : ''})`);
+  post('Transfersommer: die größten Wechsel', `${zl.length ? 'Teuerste Wechsel: ' + zl.join('; ') + '. ' : ''}${kauf.length} Wechsel zwischen Computer-Vereinen, ${leih.length} Leihen${lt.length ? ', zum Beispiel ' + lt.join('; ') : ''}.${kaufLeihe.length ? ' Fest übernommen nach Leihe: ' + kaufLeihe.join('; ') + '.' : ''}`);
 }
 
 // ---------- Leihgeschäfte ----------
@@ -1936,6 +1991,11 @@ function leihenBeenden() {
   });
   Object.values(S.spieler).forEach(p => {
     if (!p.leihe) return; const cur = p.team != null ? team(p.team) : null, own = team(p.leihe.von);
+    const kf = p.leihe.kauf;
+    if (kf && cur && own && cur.id !== S.mein && own.id !== S.mein && !cur.pool && (kf.art === 'pflicht' || (p.notenN >= 10 && p.noten / p.notenN <= 3.3))) {
+      p.karriere.push([S.saison, own.name + ' → ' + cur.name + (kf.art === 'pflicht' ? ' (Kaufpflicht)' : ' (Kaufoption)'), kf.preis]); p.vEnde = S.saison + ri(2, 3);
+      wvbFuerMich(p, kf.preis, cur); (S.leihKaeufe = S.leihKaeufe || []).push(`${p.nn} (${own.kurz} → ${cur.kurz}, ${geld(kf.preis)})`); delete p.leihe; return;
+    }
     if (cur) { cur.kader = cur.kader.filter(x => x !== p.id); cur.elf = cur.elf.filter(x => x !== p.id); cur.bank = cur.bank.filter(x => x !== p.id); }
     if (own && !own.pool) { p.team = own.id; own.kader.push(p.id); if (own.id === S.mein) zurueck.push(vname(p)); else if (cur && cur.id === S.mein) weg.push(vname(p)); }
     else { p.team = null; S.frei.push(p.id); }
@@ -2089,7 +2149,7 @@ return { editorSpeichern, editorLoeschen, importLaufend, alleTeams, leistungsFak
   leihPruefen, ausleihen, leihZiele, verleihen, verliehen, leihGebuehr, istLeihe, leihenBeenden, stimmungInit, stimmungAendern, presseAntwort, PRESSE, wirkungText, fanFaktor, moralBonus, ANSPRACHE, ansprache, formationLive,
   csvExport, csvParse, importAnwenden, kassenbewegung, buchen, bj, setS: o => { S = o; },
   setDaten, voll, stufe, tst, REGIONEN, direktRegion, abstiegsPlaetze, fortsetzen, offenesSpiel, pokalRunde, meinPokalSpiel, pokalSpiele, POKAL_RUNDEN, POKAL_WOCHEN, POKAL_PRAEMIE, POKAL_FINALE,
-  saisonLeistung, verh, tauschWert, wvbRabatt, erwartung, boniWert, boniText, leihOptionen, leihKaufen, ausgeliehen, SCHWIERIG, TITEL, titelText, bestenliste, ewigeTabelle, landName, ligaRekordListe, ligaRekordeInit, TORQ, gesamtRang, rueckblickBauen,
+  angebotBedingung, angeboteFuerMeineSpieler, wvbFuerMich, kiLeihen, kiTransfers, saisonLeistung, verh, tauschWert, wvbRabatt, erwartung, boniWert, boniText, leihOptionen, leihKaufen, ausgeliehen, SCHWIERIG, TITEL, titelText, bestenliste, ewigeTabelle, landName, ligaRekordListe, ligaRekordeInit, TORQ, gesamtRang, rueckblickBauen,
   EURO, EURO_KO, EURO_LP_WOCHEN, LAND, euroSpiele, euroTabelle, euroMeinWett, wettText, ligaKurz, istAusland, koSpiel, aggregat,
   STAB, STAB_STUFEN, TRAINING, INTENSITAET, stabStandard, stabKosten, stabMehrkosten, stabSetzen, trainingSetzen, trainingsFaktor, potSchaetzung, ersteMannschaft, aufstiegsberechtigt };
 })();
@@ -2271,7 +2331,7 @@ function stimmungBalken(n, w) { const v = Math.round(w == null ? 60 : w); const 
 function postHtml(m) {
   let akt = '';
   if (m.aktion && !m.erledigt) {
-    if (m.aktion.typ === 'angebot') akt = `<div class="zeile" style="margin-top:8px"><button class="knopf p k" data-a="angebot-ja" data-id="${m.id}">Annehmen (${g(m.aktion.betrag)})</button><button class="knopf k" data-a="angebot-mehr" data-id="${m.id}">Mehr fordern (+20 %)</button><button class="knopf k" data-a="angebot-nein" data-id="${m.id}">Ablehnen</button></div>`;
+    if (m.aktion.typ === 'angebot') akt = `<div class="zeile" style="margin-top:8px"><button class="knopf p k" data-a="angebot-ja" data-id="${m.id}">Annehmen (${g(m.aktion.betrag)})</button><button class="knopf k" data-a="angebot-mehr" data-id="${m.id}">Mehr fordern (+20 %)</button>${m.aktion.bedNein ? '' : `<button class="knopf k" data-a="angebot-bed" data-k="raten" data-id="${m.id}">In 2 Raten (+8 %)</button><button class="knopf k" data-a="angebot-bed" data-k="wvb" data-id="${m.id}">Mit 20 % Weiterverkauf (−8 %)</button>`}<button class="knopf k" data-a="angebot-nein" data-id="${m.id}">Ablehnen</button></div>`;
     if (m.aktion.typ === 'presse') { const q = FM.PRESSE[m.aktion.q]; akt = q ? `<div class="presse">${q.a.map((a, k) => `<button class="knopf k" data-a="presse" data-id="${m.id}" data-k="${k}">${e(a[0])}</button>`).join('')}</div>` : ''; }
     if (m.aktion.typ === 'investor') akt = `<div class="zeile" style="margin-top:8px"><button class="knopf p k" data-a="investor-ja" data-id="${m.id}">Annehmen</button><button class="knopf k" data-a="investor-nein" data-id="${m.id}">Ablehnen</button></div>`;
   } else if (m.antwort) akt = `<div class="klein leise">Deine Antwort: ${e(m.antwort)}</div>`;
@@ -2357,6 +2417,7 @@ function spielerDialog(id) {
   <div><div class="leise klein">Gehalt/Jahr</div><b>${g(p.gehalt)}</b></div><div><div class="leise klein">Vertrag bis</div><b>30.6.${p.vEnde + 1}</b></div><div><div class="leise klein">Saison</div><b>${p.spiele} Sp., ${p.tore} T., ${p.vorl} V.</b>${p.notenN ? `<div class="klein leise">Ø Note ${(p.noten / p.notenN).toFixed(1)}</div>` : ''}</div></div>
   ${p.klausel ? `<div class="klein" style="margin-top:6px">Ausstiegsklausel: ${g(p.klausel)}</div>` : ''}
   ${mein && p.boni ? `<div class="klein" style="margin-top:6px">${e(FM.boniText(p.boni))}</div>` : ''}
+  ${!mein && p.wvbFuer && p.wvbFuer.an === s.mein ? `<div class="klein" style="margin-top:6px">Du bist mit ${p.wvbFuer.pct} % am Mehrerlös über ${g(p.wvbFuer.basis)} beteiligt, wenn er weiterverkauft wird.</div>` : ''}
   ${mein && p.wvb ? `<div class="klein" style="margin-top:6px">Weiterverkaufsbeteiligung: ${p.wvb.pct} % vom Mehrerlös über ${g(p.wvb.basis)} gehen an ${e(FM.team(p.wvb.an).name)}.</div>` : ''}
   ${entwicklungHtml(p, mein)}
   ${p.karriere.length ? `<h3>Stationen im Spiel</h3><div class="klein">${p.karriere.map(k => `${saisonText(k[0])}: ${e(k[1])}${k[2] ? ' (' + g(k[2]) + ')' : ''}`).join('<br>')}</div>` : ''}`;
@@ -2906,6 +2967,7 @@ const AKT = {
   allesgelesen: () => { S().post.forEach(m => m.neu = false); speichern(); render(); },
   'angebot-ja': d => { const m = S().post.find(x => x.id === +d.id); const r = FM.verkaufen(m.aktion.pid, m.aktion.k, m.aktion.betrag); m.erledigt = true; m.neu = false; if (r) toast(r); speichern(); render(); },
   'angebot-mehr': d => { const m = S().post.find(x => x.id === +d.id); const r = FM.nachverhandeln(m); m.text += ' – ' + r.text; toast(r.text); speichern(); render(); },
+  'angebot-bed': d => { const m = S().post.find(x => x.id === +d.id); const r = FM.angebotBedingung(m, d.k); if (!r.ok) m.text += ' – ' + r.text; toast(r.text); speichern(); render(); },
   'angebot-nein': d => { const m = S().post.find(x => x.id === +d.id); m.erledigt = true; m.neu = false; speichern(); render(); },
   'investor-ja': d => { const s = S(); const m = s.post.find(x => x.id === +d.id); const a = m.aktion; s.investor = { betrag: a.betrag, anteil: a.anteil, ziel: a.ziel, bis: a.bis, liga: a.liga }; FM.kassenbewegung(a.betrag, 'Einstieg Investor'); m.erledigt = true; m.neu = false; speichern(); render(); },
   'investor-nein': d => { const m = S().post.find(x => x.id === +d.id); m.erledigt = true; m.neu = false; speichern(); render(); },
