@@ -1,0 +1,16 @@
+Webapp-Fassung, gebaut aus Fussball-Manager.html mit SHA-256 00282cfea3b94830c417f1ff53a8c274e15c326bb9b591d0cf989a378a343385
+
+2d3e36dd488010984b4c15fcc8a2e4d078adbc90e4c6f7f4bbd288eeaf0770bf  index.html
+c96e84dec78996183ae744c4458ec3990ebb195f6cdac555c3b976e2ff512260  sw.js
+9b31b2d8908b60ad41e94f5f42717433588f71153f516c51c13ab1c93661473f  manifest.webmanifest
+2034d1e5103e6f9c53ab1a3446f70a135847048765a61ac6d250fb2ec37402d4  symbol-180.png
+71e608e754763a0ff370e00ef8392de1527e5a420a94ac359fec62d9f4d66cfb  symbol-512.png
+
+Content-Security-Policy:
+default-src 'none';
+script-src 'unsafe-inline';
+style-src 'unsafe-inline';
+img-src data: blob: 'self';
+connect-src 'none';
+worker-src 'self';
+manifest-src 'self'
